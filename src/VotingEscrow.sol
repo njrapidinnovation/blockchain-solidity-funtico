@@ -11,10 +11,7 @@ import {IERC721Receiver} from "@openzeppelin-contracts/contracts/token/ERC721/IE
 
 contract VotingEscrow is IERC721{
     enum DepositType {
-        DEPOSIT_FOR_TYPE,
         CREATE_LOCK_TYPE,
-        INCREASE_LOCK_AMOUNT,
-        INCREASE_UNLOCK_TIME,
         MERGE_TYPE
     }
 
@@ -75,7 +72,6 @@ contract VotingEscrow is IERC721{
         DepositType deposit_type,
         uint ts
     );
-    event Withdraw(address indexed provider, uint tokenId, uint value, uint ts);
     event Supply(uint prevSupply, uint supply);
 
 
@@ -83,9 +79,7 @@ contract VotingEscrow is IERC721{
                                CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
     address public immutable token;
-    address public voter;
     address public team;
-    address public artProxy;
 
     mapping(uint => Point) public point_history; // epoch -> unsigned point
 
@@ -108,9 +102,9 @@ contract VotingEscrow is IERC721{
     /// @param token_addr `VELO` token address
     constructor(address token_addr, address art_proxy) {
         token = token_addr;
-        voter = msg.sender;
+        // voter = msg.sender;
         team = msg.sender;
-        artProxy = art_proxy;
+        // artProxy = art_proxy;
 
         point_history[0].blk = block.number;
         point_history[0].ts = block.timestamp;
@@ -298,7 +292,7 @@ contract VotingEscrow is IERC721{
         uint _tokenId,
         address _sender
     ) internal {
-        require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
+        // require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
         // Check requirements
         require(_isApprovedOrOwner(_sender, _tokenId));
         // Clear approval. Throws if `_from` is not the current owner
@@ -839,11 +833,5 @@ contract VotingEscrow is IERC721{
     }
 
 
-    /*///////////////////////////////////////////////////////////////
-                            GAUGE VOTING LOGIC
-    //////////////////////////////////////////////////////////////*/
-
-    mapping(uint => uint) public attachments;
-    mapping(uint => bool) public voted;
 
 }
