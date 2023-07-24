@@ -11,6 +11,8 @@ import {IERC721Receiver} from "@openzeppelin-contracts/contracts/token/ERC721/IE
 contract VotingEscrow is IERC721 {
     enum DepositType {
         CREATE_LOCK_TYPE,
+        INCREASE_LOCK_AMOUNT,
+        INCREASE_UNLOCK_TIME,
         MERGE_TYPE
     }
 
@@ -552,6 +554,82 @@ contract VotingEscrow is IERC721 {
         return current == address(0) ? delegator : current;
     }
 
+    /**
+     * @notice Gets the current votes balance for `account`
+     * @param account The address to get votes balance
+     * @return The number of current votes for `account`
+     */
+    function getVotes(address account) external view returns (uint) {
+        uint32 nCheckpoints = numCheckpoints[account];
+        if (nCheckpoints == 0) {
+            return 0;
+        }
+        uint[] storage _tokenIds = checkpoints[account][nCheckpoints - 1]
+            .tokenIds;
+        uint votes = 0;
+        for (uint i = 0; i < _tokenIds.length; i++) {
+            uint tId = _tokenIds[i];
+            votes = votes + _balanceOfNFT(tId, block.timestamp);
+        }
+        return votes;
+    }
+
+    function getPastVotesIndex(
+        address account,
+        uint timestamp
+    ) public view returns (uint32) {
+        uint32 nCheckpoints = numCheckpoints[account];
+        if (nCheckpoints == 0) {
+            return 0;
+        }
+        // First check most recent balance
+        if (checkpoints[account][nCheckpoints - 1].timestamp <= timestamp) {
+            return (nCheckpoints - 1);
+        }
+
+        // Next check implicit zero balance
+        if (checkpoints[account][0].timestamp > timestamp) {
+            return 0;
+        }
+
+        uint32 lower = 0;
+        uint32 upper = nCheckpoints - 1;
+        while (upper > lower) {
+            uint32 center = upper - (upper - lower) / 2; // ceil, avoiding overflow
+            Checkpoint storage cp = checkpoints[account][center];
+            if (cp.timestamp == timestamp) {
+                return center;
+            } else if (cp.timestamp < timestamp) {
+                lower = center;
+            } else {
+                upper = center - 1;
+            }
+        }
+        return lower;
+    }
+
+    function getPastVotes(
+        address account,
+        uint timestamp
+    ) public view returns (uint) {
+        uint32 _checkIndex = getPastVotesIndex(account, timestamp);
+        // Sum votes
+        uint[] storage _tokenIds = checkpoints[account][_checkIndex].tokenIds;
+        uint votes = 0;
+        for (uint i = 0; i < _tokenIds.length; i++) {
+            uint tId = _tokenIds[i];
+            // Use the provided input timestamp here to get the right decay
+            votes = votes + _balanceOfNFT(tId, timestamp);
+        }
+        return votes;
+    }
+
+    function getPastTotalSupply(
+        uint256 timestamp
+    ) external view returns (uint) {
+        return totalSupplyAtT(timestamp);
+    }
+
     /*///////////////////////////////////////////////////////////////
                              DAO VOTING LOGIC
     //////////////////////////////////////////////////////////////*/
@@ -619,6 +697,77 @@ contract VotingEscrow is IERC721 {
         } else {
             return _nCheckPoints;
         }
+    }
+
+    /*///////////////////////////////////////////////////////////////
+                           GAUGE VOTING STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Get the current voting power for `_tokenId`
+    /// @dev Adheres to the ERC20 `balanceOf` interface for Aragon compatibility
+    /// @param _tokenId NFT for lock
+    /// @param _t Epoch time to return voting power at
+    /// @return User voting power
+    function _balanceOfNFT(
+        uint _tokenId,
+        uint _t
+    ) internal view returns (uint) {
+        uint _epoch = user_point_epoch[_tokenId];
+        if (_epoch == 0) {
+            return 0;
+        } else {
+            Point memory last_point = user_point_history[_tokenId][_epoch];
+            last_point.bias -=
+                last_point.slope *
+                int128(int256(_t) - int256(last_point.ts));
+            if (last_point.bias < 0) {
+                last_point.bias = 0;
+            }
+            return uint(int256(last_point.bias));
+        }
+    }
+
+    /// @notice Calculate total voting power at some point in the past
+    /// @param point The point (bias/slope) to start search from
+    /// @param t Time to calculate the total voting power at
+    /// @return Total voting power at that time
+    function _supply_at(
+        Point memory point,
+        uint t
+    ) internal view returns (uint) {
+        Point memory last_point = point;
+        uint t_i = (last_point.ts / WEEK) * WEEK;
+        for (uint i = 0; i < 255; ++i) {
+            t_i += WEEK;
+            int128 d_slope = 0;
+            if (t_i > t) {
+                t_i = t;
+            } else {
+                d_slope = slope_changes[t_i];
+            }
+            last_point.bias -=
+                last_point.slope *
+                int128(int256(t_i - last_point.ts));
+            if (t_i == t) {
+                break;
+            }
+            last_point.slope += d_slope;
+            last_point.ts = t_i;
+        }
+
+        if (last_point.bias < 0) {
+            last_point.bias = 0;
+        }
+        return uint(uint128(last_point.bias));
+    }
+
+    /// @notice Calculate total voting power
+    /// @dev Adheres to the ERC20 `totalSupply` interface for Aragon compatibility
+    /// @return Total voting power
+    function totalSupplyAtT(uint t) public view returns (uint) {
+        uint _epoch = epoch;
+        Point memory last_point = point_history[_epoch];
+        return _supply_at(last_point, t);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -884,5 +1033,28 @@ contract VotingEscrow is IERC721 {
             block.timestamp
         );
         emit Supply(supply_before, supply_before + _value);
+    }
+
+    /// @notice Deposit `_value` additional tokens for `_tokenId` without modifying the unlock time
+    /// @param _value Amount of tokens to deposit and add to the lock
+    function increase_amount(uint _tokenId, uint _value) external nonreentrant {
+        assert(_isApprovedOrOwner(msg.sender, _tokenId));
+
+        LockedBalance memory _locked = locked[_tokenId];
+
+        assert(_value > 0); // dev: need non-zero value
+        require(_locked.amount > 0, "No existing lock found");
+        require(
+            _locked.end > block.timestamp,
+            "Cannot add to expired lock. Withdraw"
+        );
+
+        _deposit_for(
+            _tokenId,
+            _value,
+            0,
+            _locked,
+            DepositType.INCREASE_LOCK_AMOUNT
+        );
     }
 }
