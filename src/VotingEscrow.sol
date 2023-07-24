@@ -2,14 +2,13 @@
 pragma solidity 0.8.19;
 
 import {IERC721, IERC721Metadata} from "@openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
- /*
+/*
  modified this to use Openzeppelin but in source they used own contracts
  */
 import {IERC20} from "@openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {IERC721Receiver} from "@openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
 
-
-contract VotingEscrow is IERC721{
+contract VotingEscrow is IERC721 {
     enum DepositType {
         CREATE_LOCK_TYPE,
         MERGE_TYPE
@@ -25,7 +24,7 @@ contract VotingEscrow is IERC721{
         uint ts;
         uint blk; // block
     }
-    
+
     /// @dev reentrancy guard
     uint8 internal constant _not_entered = 1;
     uint8 internal constant _entered = 2;
@@ -36,29 +35,26 @@ contract VotingEscrow is IERC721{
         _;
         _entered_state = _not_entered;
     }
-    
+
     // tokenId => latest_epoch
     mapping(uint => uint) public user_point_epoch;
-    
+
     // tokenId => all the points history till now
     mapping(uint => Point[1000000000]) public user_point_history; // user -> Point[user_epoch]
-    
+
     // tokenId => {amount, lock_end}
     mapping(uint => LockedBalance) public locked;
-    
+
     uint public epoch;
-    
+
     // time => slope_change in integer
     mapping(uint => int128) public slope_changes; // time -> signed slope change
     uint public supply;
 
-
-    
     uint internal constant WEEK = 1 weeks;
     uint internal constant MAXTIME = 4 * 365 * 86400;
     int128 internal constant iMAXTIME = 4 * 365 * 86400;
     uint internal constant MULTIPLIER = 1 ether;
-
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -74,8 +70,7 @@ contract VotingEscrow is IERC721{
     );
     event Supply(uint prevSupply, uint supply);
 
-
-     /*//////////////////////////////////////////////////////////////
+    /*//////////////////////////////////////////////////////////////
                                CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
     address public immutable token;
@@ -100,7 +95,7 @@ contract VotingEscrow is IERC721{
 
     /// @notice Contract constructor
     /// @param token_addr `VELO` token address
-    constructor(address token_addr, address art_proxy) {
+    constructor(address token_addr /*,address art_proxy*/) {
         token = token_addr;
         // voter = msg.sender;
         team = msg.sender;
@@ -119,13 +114,15 @@ contract VotingEscrow is IERC721{
         emit Transfer(address(this), address(0), tokenId);
     }
 
-     /*//////////////////////////////////////////////////////////////
+    /*//////////////////////////////////////////////////////////////
                               ERC165 LOGIC
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Interface identification is specified in ERC-165.
     /// @param _interfaceID Id of the interface
-    function supportsInterface(bytes4 _interfaceID) external view returns (bool) {
+    function supportsInterface(
+        bytes4 _interfaceID
+    ) external view returns (bool) {
         return supportedInterfaces[_interfaceID];
     }
 
@@ -189,7 +186,7 @@ contract VotingEscrow is IERC721{
     function balanceOf(address _owner) external view returns (uint) {
         return _balance(_owner);
     }
-    
+
     /*//////////////////////////////////////////////////////////////
                          ERC721 APPROVAL STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -210,10 +207,14 @@ contract VotingEscrow is IERC721{
 
     /// @dev Checks if `_operator` is an approved operator for `_owner`.
     /// @param _owner The address that owns the NFTs.
-    /// @param _operator The address that acts on behalf of the owner.
-    function isApprovedForAll(address _owner, address _operator) external view returns (bool) {
+    /// @param _operator The address that acts on behalf ofp the owner.
+    function isApprovedForAll(
+        address _owner,
+        address _operator
+    ) external view returns (bool) {
         return (ownerToOperators[_owner])[_operator];
     }
+
     /*//////////////////////////////////////////////////////////////
                               ERC721 LOGIC
     //////////////////////////////////////////////////////////////*/
@@ -268,7 +269,10 @@ contract VotingEscrow is IERC721{
     /// @param _spender address of the spender to query
     /// @param _tokenId uint ID of the token to be transferred
     /// @return bool whether the msg.sender is approved for the given token ID, is an operator of the owner, or is the owner of the token
-    function _isApprovedOrOwner(address _spender, uint _tokenId) internal view returns (bool) {
+    function _isApprovedOrOwner(
+        address _spender,
+        uint _tokenId
+    ) internal view returns (bool) {
         address owner = idToOwner[_tokenId];
         bool spenderIsOwner = owner == _spender;
         bool spenderIsApproved = _spender == idToApprovals[_tokenId];
@@ -276,7 +280,10 @@ contract VotingEscrow is IERC721{
         return spenderIsOwner || spenderIsApproved || spenderIsApprovedForAll;
     }
 
-    function isApprovedOrOwner(address _spender, uint _tokenId) external view returns (bool) {
+    function isApprovedOrOwner(
+        address _spender,
+        uint _tokenId
+    ) external view returns (bool) {
         return _isApprovedOrOwner(_spender, _tokenId);
     }
 
@@ -318,11 +325,7 @@ contract VotingEscrow is IERC721{
     /// @param _from The current owner of the NFT.
     /// @param _to The new owner.
     /// @param _tokenId The NFT to transfer.
-    function transferFrom(
-        address _from,
-        address _to,
-        uint _tokenId
-    ) external {
+    function transferFrom(address _from, address _to, uint _tokenId) external {
         _transferFrom(_from, _to, _tokenId, msg.sender);
     }
 
@@ -378,13 +381,24 @@ contract VotingEscrow is IERC721{
 
         if (_isContract(_to)) {
             // Throws if transfer destination is a contract which does not implement 'onERC721Received'
-            try IERC721Receiver(_to).onERC721Received(msg.sender, _from, _tokenId, _data) returns (bytes4 response) {
-                if (response != IERC721Receiver(_to).onERC721Received.selector) {
+            try
+                IERC721Receiver(_to).onERC721Received(
+                    msg.sender,
+                    _from,
+                    _tokenId,
+                    _data
+                )
+            returns (bytes4 response) {
+                if (
+                    response != IERC721Receiver(_to).onERC721Received.selector
+                ) {
                     revert("ERC721: ERC721Receiver rejected tokens");
                 }
             } catch (bytes memory reason) {
                 if (reason.length == 0) {
-                    revert('ERC721: transfer to non ERC721Receiver implementer');
+                    revert(
+                        "ERC721: transfer to non ERC721Receiver implementer"
+                    );
                 } else {
                     assembly {
                         revert(add(32, reason), mload(reason))
@@ -393,7 +407,7 @@ contract VotingEscrow is IERC721{
             }
         }
     }
-    
+
     /*//////////////////////////////////////////////////////////////
                         INTERNAL MINT/BURN LOGIC
     //////////////////////////////////////////////////////////////*/
@@ -405,7 +419,10 @@ contract VotingEscrow is IERC721{
     mapping(uint => uint) internal tokenToOwnerIndex;
 
     /// @dev  Get token by index
-    function tokenOfOwnerByIndex(address _owner, uint _tokenIndex) external view returns (uint) {
+    function tokenOfOwnerByIndex(
+        address _owner,
+        uint _tokenIndex
+    ) external view returns (uint) {
         return ownerToNFTokenIdList[_owner][_tokenIndex];
     }
 
@@ -492,17 +509,19 @@ contract VotingEscrow is IERC721{
         ownerToNFTokenCount[_from] -= 1;
     }
 
-   
-
     /*///////////////////////////////////////////////////////////////
                             DAO VOTING STORAGE
     //////////////////////////////////////////////////////////////*/
 
     /// @notice The EIP-712 typehash for the contract's domain
-    bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+    bytes32 public constant DOMAIN_TYPEHASH =
+        keccak256(
+            "EIP712Domain(string name,uint256 chainId,address verifyingContract)"
+        );
 
     /// @notice The EIP-712 typehash for the delegation struct used by the contract
-    bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+    bytes32 public constant DELEGATION_TYPEHASH =
+        keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
 
     /// @notice A record of each accounts delegate
     mapping(address => address) private _delegates;
@@ -528,7 +547,7 @@ contract VotingEscrow is IERC721{
      * the delegator's own address if they haven't delegated.
      * This avoids having to delegate to oneself.
      */
-     function delegates(address delegator) public view returns (address) {
+    function delegates(address delegator) public view returns (address) {
         address current = _delegates[delegator];
         return current == address(0) ? delegator : current;
     }
@@ -549,9 +568,8 @@ contract VotingEscrow is IERC721{
                     ? checkpoints[srcRep][srcRepNum - 1].tokenIds
                     : checkpoints[srcRep][0].tokenIds;
                 uint32 nextSrcRepNum = _findWhatCheckpointToWrite(srcRep);
-                uint[] storage srcRepNew = checkpoints[srcRep][
-                    nextSrcRepNum
-                ].tokenIds;
+                uint[] storage srcRepNew = checkpoints[srcRep][nextSrcRepNum]
+                    .tokenIds;
                 // All the same except _tokenId
                 for (uint i = 0; i < srcRepOld.length; i++) {
                     uint tId = srcRepOld[i];
@@ -569,9 +587,8 @@ contract VotingEscrow is IERC721{
                     ? checkpoints[dstRep][dstRepNum - 1].tokenIds
                     : checkpoints[dstRep][0].tokenIds;
                 uint32 nextDstRepNum = _findWhatCheckpointToWrite(dstRep);
-                uint[] storage dstRepNew = checkpoints[dstRep][
-                    nextDstRepNum
-                ].tokenIds;
+                uint[] storage dstRepNew = checkpoints[dstRep][nextDstRepNum]
+                    .tokenIds;
                 // All the same plus _tokenId
                 require(
                     dstRepOld.length + 1 <= MAX_DELEGATES,
@@ -588,11 +605,9 @@ contract VotingEscrow is IERC721{
         }
     }
 
-    function _findWhatCheckpointToWrite(address account)
-        internal
-        view
-        returns (uint32)
-    {
+    function _findWhatCheckpointToWrite(
+        address account
+    ) internal view returns (uint32) {
         uint _timestamp = block.timestamp;
         uint32 _nCheckPoints = numCheckpoints[account];
 
@@ -605,12 +620,10 @@ contract VotingEscrow is IERC721{
             return _nCheckPoints;
         }
     }
-    
 
-     /*//////////////////////////////////////////////////////////////
+    /*//////////////////////////////////////////////////////////////
                               ESCROW LOGIC
     //////////////////////////////////////////////////////////////*/
-
 
     /// @notice Record global and per-user data to checkpoint
     /// @param _tokenId NFT token ID. No user checkpoint if 0
@@ -630,16 +643,20 @@ contract VotingEscrow is IERC721{
         if (_tokenId != 0) {
             // Calculate slopes and biases
             // Kept at zero when they have to
-            
+
             // if old lock did not expire and amount exists
             if (old_locked.end > block.timestamp && old_locked.amount > 0) {
                 u_old.slope = old_locked.amount / iMAXTIME;
-                u_old.bias = u_old.slope * int128(int256(old_locked.end - block.timestamp));
+                u_old.bias =
+                    u_old.slope *
+                    int128(int256(old_locked.end - block.timestamp));
             }
             // if new lock  and amount exists
             if (new_locked.end > block.timestamp && new_locked.amount > 0) {
                 u_new.slope = new_locked.amount / iMAXTIME;
-                u_new.bias = u_new.slope * int128(int256(new_locked.end - block.timestamp));
+                u_new.bias =
+                    u_new.slope *
+                    int128(int256(new_locked.end - block.timestamp));
             }
 
             // Read values of scheduled changes in the slope
@@ -655,7 +672,12 @@ contract VotingEscrow is IERC721{
             }
         }
 
-        Point memory last_point = Point({bias: 0, slope: 0, ts: block.timestamp, blk: block.number});
+        Point memory last_point = Point({
+            bias: 0,
+            slope: 0,
+            ts: block.timestamp,
+            blk: block.number
+        });
         if (_epoch > 0) {
             last_point = point_history[_epoch];
         }
@@ -665,12 +687,14 @@ contract VotingEscrow is IERC721{
         // as we cannot figure that out exactly from inside the contract
         Point memory initial_last_point = last_point;
         uint block_slope = 0; // dblock/dt
-        
+
         // if current time is > last point ts
         if (block.timestamp > last_point.ts) {
             // MULTIPLIER = 1ether
             //MULTIPLIER is used just to avoid decimals
-            block_slope = (MULTIPLIER * (block.number - last_point.blk)) / (block.timestamp - last_point.ts);
+            block_slope =
+                (MULTIPLIER * (block.number - last_point.blk)) /
+                (block.timestamp - last_point.ts);
         }
         // If last point is already recorded in this block, slope=0
         // But that's ok b/c we know the block in such case
@@ -691,7 +715,9 @@ contract VotingEscrow is IERC721{
                     d_slope = slope_changes[t_i];
                 }
                 //last_point.bias = last_point.slope * int128(int256(old_locked.end - t_i));
-                last_point.bias -= last_point.slope * int128(int256(t_i - last_checkpoint));
+                last_point.bias -=
+                    last_point.slope *
+                    int128(int256(t_i - last_checkpoint));
                 last_point.slope += d_slope;
                 if (last_point.bias < 0) {
                     // This can happen
@@ -704,7 +730,10 @@ contract VotingEscrow is IERC721{
                 last_checkpoint = t_i;
                 last_point.ts = t_i;
                 // in block_slope we had multiplied with MULTIPLIER as we didnt want to have decimals, so now dividing it.
-                last_point.blk = initial_last_point.blk + (block_slope * (t_i - initial_last_point.ts)) / MULTIPLIER;
+                last_point.blk =
+                    initial_last_point.blk +
+                    (block_slope * (t_i - initial_last_point.ts)) /
+                    MULTIPLIER;
                 _epoch += 1;
                 if (t_i == block.timestamp) {
                     last_point.blk = block.number;
@@ -764,30 +793,48 @@ contract VotingEscrow is IERC721{
         }
     }
 
-
     /// @notice Deposit `_value` tokens for `_to` and lock for `_lock_duration`
     /// @param _value Amount to deposit
     /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
     /// @param _to Address to deposit
-    function _create_lock(uint _value, uint _lock_duration, address _to) internal returns (uint) {
-        uint unlock_time = (block.timestamp + _lock_duration) / WEEK * WEEK; // Locktime is rounded down to weeks
+    function _create_lock(
+        uint _value,
+        uint _lock_duration,
+        address _to
+    ) internal returns (uint) {
+        uint unlock_time = ((block.timestamp + _lock_duration) / WEEK) * WEEK; // Locktime is rounded down to weeks
 
         require(_value > 0); // dev: need non-zero value
-        require(unlock_time > block.timestamp, 'Can only lock until time in the future');
-        require(unlock_time <= block.timestamp + MAXTIME, 'Voting lock can be 4 years max');
+        require(
+            unlock_time > block.timestamp,
+            "Can only lock until time in the future"
+        );
+        require(
+            unlock_time <= block.timestamp + MAXTIME,
+            "Voting lock can be 4 years max"
+        );
 
         ++tokenId;
         uint _tokenId = tokenId;
         _mint(_to, _tokenId);
 
-        _deposit_for(_tokenId, _value, unlock_time, locked[_tokenId], DepositType.CREATE_LOCK_TYPE);
+        _deposit_for(
+            _tokenId,
+            _value,
+            unlock_time,
+            locked[_tokenId],
+            DepositType.CREATE_LOCK_TYPE
+        );
         return _tokenId;
     }
 
     /// @notice Deposit `_value` tokens for `msg.sender` and lock for `_lock_duration`
     /// @param _value Amount to deposit
     /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
-    function create_lock(uint _value, uint _lock_duration) external nonreentrant returns (uint) {
+    function create_lock(
+        uint _value,
+        uint _lock_duration
+    ) external nonreentrant returns (uint) {
         return _create_lock(_value, _lock_duration, msg.sender);
     }
 
@@ -828,10 +875,14 @@ contract VotingEscrow is IERC721{
             assert(IERC20(token).transferFrom(from, address(this), _value));
         }
 
-        emit Deposit(from, _tokenId, _value, _locked.end, deposit_type, block.timestamp);
+        emit Deposit(
+            from,
+            _tokenId,
+            _value,
+            _locked.end,
+            deposit_type,
+            block.timestamp
+        );
         emit Supply(supply_before, supply_before + _value);
     }
-
-
-
 }
