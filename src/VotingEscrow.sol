@@ -207,7 +207,7 @@ contract VotingEscrow is IERC721 {
 
     /// @dev Checks if `_operator` is an approved operator for `_owner`.
     /// @param _owner The address that owns the NFTs.
-    /// @param _operator The address that acts on behalf of the owner.
+    /// @param _operator The address that acts on behalf ofp the owner.
     function isApprovedForAll(
         address _owner,
         address _operator

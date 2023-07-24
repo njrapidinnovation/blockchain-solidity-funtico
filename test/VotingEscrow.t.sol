@@ -9,6 +9,8 @@ contract VotingEscrowTest is Test {
     VotingEscrow escrow;
     Tico TICO;
     address owner = makeAddr("owner");
+    address bob = makeAddr("0x01");
+    address alice = makeAddr("0x02");
     uint internal constant MAXTIME = 4 * 365 * 86400;
     uint internal constant WEEK = 1 weeks;
 
@@ -116,6 +118,150 @@ contract VotingEscrowTest is Test {
         escrow.create_lock(1e21, lockDuration);
         assertEq(TICO.balanceOf(owner), 0);
         assertEq(TICO.balanceOf(address(escrow)) - 1e21, 0);
+    }
+
+    function testNftTransfer() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        vm.prank(owner);
+        escrow.safeTransferFrom(owner, bob, 1,"");
+        address newOwner = escrow.ownerOf(1);
+        assertEq(newOwner, bob);
+    }
+
+    function testNftTransferRevert() public {
+        vm.startPrank(owner);
+        vm.expectRevert();
+        escrow.transferFrom(owner, bob, 1);
+        vm.stopPrank();
+    }
+
+    function testNftSafeTransferWithApprove() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        vm.prank(owner);
+        escrow.approve(bob,1);
+
+        bool isApprovedOrOwner = escrow.isApprovedOrOwner(bob,1);
+        assertEq(isApprovedOrOwner, true);
+
+        address getApprovedAddress = escrow.getApproved(1);
+        assertEq(getApprovedAddress, bob);
+        vm.prank(bob);
+        escrow.safeTransferFrom(owner, bob, 1,"");
+        address newOwner = escrow.ownerOf(1);
+        assertEq(newOwner, bob);
+    }
+
+    function testWrongId() public {
+        vm.startPrank(owner);
+        vm.expectRevert();
+        escrow.approve(bob,1);
+    }
+
+    function testApproveForMyself() public {
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        escrow.create_lock(1e21, lockDuration);
+        vm.expectRevert();
+        escrow.approve(owner,1);
+        vm.stopPrank();
+    }
+
+    function testApproveByApproved() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        // vm.prank(owner);
+        // escrow.setApprovalForAll(bob, true);
+        vm.startPrank(bob);
+        vm.expectRevert();
+        escrow.approve(alice,1);
+        vm.stopPrank();
+    }
+
+    function testApproveAllForMyself() public {
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        escrow.create_lock(1e21, lockDuration);
+        vm.expectRevert();
+        escrow.setApprovalForAll(owner, true);
+        vm.stopPrank();
+    }
+
+    function testNftSafeTransferWithApproveForAllWithCallData() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        vm.prank(owner);
+        escrow.setApprovalForAll(bob, true);
+        bool getApprovedAll = escrow.isApprovedForAll(owner,bob);
+        assertEq(getApprovedAll, true);
+        vm.prank(bob);
+        escrow.safeTransferFrom(owner, bob, 1,"");
+        address newOwner = escrow.ownerOf(1);
+        assertEq(newOwner, bob);
+    }
+
+    function testNftSafeTransferWithApproveForAllWithoutCallData() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        vm.prank(owner);
+        escrow.setApprovalForAll(bob, true);
+        bool getApprovedAll = escrow.isApprovedForAll(owner,bob);
+        assertEq(getApprovedAll, true);
+        vm.prank(bob);
+        escrow.safeTransferFrom(owner, bob, 1);
+        address newOwner = escrow.ownerOf(1);
+        assertEq(newOwner, bob);
+    }
+
+    function testNftTransferWithApprove() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        vm.prank(owner);
+        escrow.approve(bob,1);
+        vm.prank(bob);
+        escrow.transferFrom(owner, bob, 1);
+        address newOwner = escrow.ownerOf(1);
+        assertEq(newOwner, bob);
+    }
+
+    function testNftTransferWithApproveForAll() public {
+        vm.prank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        vm.prank(owner);
+        escrow.create_lock(1e21, lockDuration);
+        vm.prank(owner);
+        escrow.setApprovalForAll(bob, true);
+        vm.prank(bob);
+        escrow.transferFrom(owner, bob, 1);
+        address newOwner = escrow.ownerOf(1);
+        assertEq(newOwner, bob);
+    }
+
+    function testSupportInterfaces() public {
+        bool support = escrow.supportsInterface(0x01ffc9a7);
+        assertTrue(support == true);
     }
 
 
