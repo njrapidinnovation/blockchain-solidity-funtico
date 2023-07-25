@@ -84,11 +84,11 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         uint token_id = escrow.create_lock(1e21, lockDuration);
         uint nft_bal = escrow.balanceOf(owner);
-        assertEq(nft_bal,1);
-        assertEq(escrow.tokenOfOwnerByIndex(owner,nft_bal-1), token_id);
-        assertEq(escrow.tokenOfOwnerByIndex(owner,nft_bal), 0);
+        assertEq(nft_bal, 1);
+        assertEq(escrow.tokenOfOwnerByIndex(owner, nft_bal - 1), token_id);
+        assertEq(escrow.tokenOfOwnerByIndex(owner, nft_bal), 0);
     }
-    
+
     function testCheckMintedNftOwner() public {
         vm.prank(owner);
         TICO.approve(address(escrow), 1e21);
@@ -105,7 +105,7 @@ contract VotingEscrowTest is Test {
         uint256 lockDuration = 7 * 24 * 3600; // 1 week
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
-        (int128 amount,uint end) = escrow.locked(1);
+        (int128 amount, uint end) = escrow.locked(1);
         assertEq(amount, 1e21);
         assertEq(end, ((block.timestamp + lockDuration) / WEEK) * WEEK);
     }
@@ -127,7 +127,7 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
-        escrow.safeTransferFrom(owner, bob, 1,"");
+        escrow.safeTransferFrom(owner, bob, 1, "");
         address newOwner = escrow.ownerOf(1);
         assertEq(newOwner, bob);
     }
@@ -146,15 +146,15 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
-        escrow.approve(bob,1);
+        escrow.approve(bob, 1);
 
-        bool isApprovedOrOwner = escrow.isApprovedOrOwner(bob,1);
+        bool isApprovedOrOwner = escrow.isApprovedOrOwner(bob, 1);
         assertEq(isApprovedOrOwner, true);
 
         address getApprovedAddress = escrow.getApproved(1);
         assertEq(getApprovedAddress, bob);
         vm.prank(bob);
-        escrow.safeTransferFrom(owner, bob, 1,"");
+        escrow.safeTransferFrom(owner, bob, 1, "");
         address newOwner = escrow.ownerOf(1);
         assertEq(newOwner, bob);
     }
@@ -162,7 +162,7 @@ contract VotingEscrowTest is Test {
     function testWrongId() public {
         vm.startPrank(owner);
         vm.expectRevert();
-        escrow.approve(bob,1);
+        escrow.approve(bob, 1);
     }
 
     function testApproveForMyself() public {
@@ -171,7 +171,7 @@ contract VotingEscrowTest is Test {
         uint256 lockDuration = 7 * 24 * 3600; // 1 week
         escrow.create_lock(1e21, lockDuration);
         vm.expectRevert();
-        escrow.approve(owner,1);
+        escrow.approve(owner, 1);
         vm.stopPrank();
     }
 
@@ -185,7 +185,7 @@ contract VotingEscrowTest is Test {
         // escrow.setApprovalForAll(bob, true);
         vm.startPrank(bob);
         vm.expectRevert();
-        escrow.approve(alice,1);
+        escrow.approve(alice, 1);
         vm.stopPrank();
     }
 
@@ -207,10 +207,10 @@ contract VotingEscrowTest is Test {
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
         escrow.setApprovalForAll(bob, true);
-        bool getApprovedAll = escrow.isApprovedForAll(owner,bob);
+        bool getApprovedAll = escrow.isApprovedForAll(owner, bob);
         assertEq(getApprovedAll, true);
         vm.prank(bob);
-        escrow.safeTransferFrom(owner, bob, 1,"");
+        escrow.safeTransferFrom(owner, bob, 1, "");
         address newOwner = escrow.ownerOf(1);
         assertEq(newOwner, bob);
     }
@@ -223,7 +223,7 @@ contract VotingEscrowTest is Test {
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
         escrow.setApprovalForAll(bob, true);
-        bool getApprovedAll = escrow.isApprovedForAll(owner,bob);
+        bool getApprovedAll = escrow.isApprovedForAll(owner, bob);
         assertEq(getApprovedAll, true);
         vm.prank(bob);
         escrow.safeTransferFrom(owner, bob, 1);
@@ -238,7 +238,7 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
-        escrow.approve(bob,1);
+        escrow.approve(bob, 1);
         vm.prank(bob);
         escrow.transferFrom(owner, bob, 1);
         address newOwner = escrow.ownerOf(1);
@@ -263,7 +263,6 @@ contract VotingEscrowTest is Test {
         bool support = escrow.supportsInterface(0x01ffc9a7);
         assertTrue(support == true);
     }
-
 
     function testCreateLock() public {
         vm.prank(owner);
