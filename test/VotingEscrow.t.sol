@@ -299,4 +299,134 @@ contract VotingEscrowTest is Test {
             TICO.mint(_accounts[i], _amounts[i]);
         }
     }
+
+    function testIncreaseAmount() public {
+        // 1. Prepare test data
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        uint256 initialAmount = 1e19; // Initial locked amount
+        uint256 increaseAmount = 1e18; // Amount to be added to the existing lock
+
+        // 2. Create a new lock with an initial amount
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), initialAmount);
+        uint256 tokenId = escrow.create_lock(initialAmount, lockDuration);
+
+        // 3. Increase the locked amount
+        TICO.approve(address(escrow), increaseAmount);
+        escrow.increase_amount(tokenId, increaseAmount);
+        vm.stopPrank();
+
+        // 4. Check the updated locked amount
+        (int128 updatedAmount, uint updatedEnd) = escrow.locked(tokenId);
+        uint256 expectedEnd = ((block.timestamp + lockDuration) / WEEK) * WEEK;
+
+        assertEq(
+            updatedAmount,
+            int128(int256(initialAmount + increaseAmount)),
+            "Unexpected updated locked amount"
+        );
+        assertEq(
+            updatedEnd,
+            expectedEnd,
+            "Unexpected updated lock end timestamp"
+        );
+    }
+
+    function testIncreaseAmountExpiredLock() public {
+        // 1. Prepare test data
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        uint256 initialAmount = 1e19; // Initial locked amount
+        uint256 increaseAmount = 1e18; // Amount to be added to the existing lock
+
+        // 2. Create a new lock with an initial amount and make it expired
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), initialAmount + increaseAmount);
+        uint256 tokenId = escrow.create_lock(initialAmount, lockDuration);
+
+        // 3. Fast forward time to make the lock expired using vm.warp
+        vm.warp(MAXTIME + WEEK + 1);
+
+        // 3. Try to increase the locked amount (should revert)
+        vm.expectRevert("Cannot add to expired lock. Withdraw");
+        escrow.increase_amount(tokenId, increaseAmount);
+        vm.stopPrank();
+    }
+
+    function testIncreaseAmountWithoutLock() public {
+        // 1. Prepare test data
+        uint256 increaseAmount = 5e20; // Amount to be added to the non-existing lock
+
+        // 2. Try to increase the locked amount for a non-existing lock (should revert)
+        vm.expectRevert();
+        escrow.increase_amount(9999, increaseAmount); // Using a non-existing token ID
+    }
+
+    function testIncreaseAmountWithZeroValue() public {
+        // 1. Prepare test data
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+
+        // 2. Create a new lock with an initial amount
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 tokenId = escrow.create_lock(1e21, lockDuration);
+
+        // 3. Try to increase the locked amount with zero value (should revert)
+        vm.expectRevert();
+        escrow.increase_amount(tokenId, 0);
+        vm.stopPrank();
+    }
+
+    // Test case: Attempt to increase amount with an invalid token ID
+    function testIncreaseAmountInvalidTokenId() public {
+        uint256 invalidTokenId = 9999; // Using an invalid token ID
+
+        // Attempt to increase the locked amount with an invalid token ID (should revert)
+        vm.expectRevert();
+        escrow.increase_amount(invalidTokenId, 1e18);
+    }
+
+    function testGetVotes() public {
+        vm.startPrank(owner);
+        // create a lock, estimate the getVotss
+    }
+
+    // Test case: Get votes balance for an account with no locked tokens
+    function testGetVotesNoLockedTokens() public {
+        uint256 votesBalance = escrow.getVotes(owner);
+        assertEq(
+            votesBalance,
+            0,
+            "Votes balance should be zero for an account with no locked tokens"
+        );
+    }
+
+    // Test case: Get votes balance for an account with locked tokens
+    // function testGetVotesWithLockedTokens() public {
+    //     vm.startPrank(owner);
+    //     // 1. Prepare test data
+    //     uint256 initialAmount = 1e18; // Initial locked amount
+    //     uint lock_duration = MAXTIME;
+    //     uint unlock_time = ((block.timestamp + lock_duration) / WEEK) * WEEK; // Locktime is rounded down to weeks
+
+    //     uint observedVotingPower = (unlock_time * initialAmount) /
+    //         lock_duration;
+
+    //     // console.log(block.timestamp, unlock_time, _maxtime, MAXTIME);
+    //     // 2. Create a new lock with an initial amount and unlock time
+    //     TICO.approve(address(escrow), initialAmount);
+    //     vm.warp(1);
+    //     console.log(block.timestamp, unlock_time);
+    //     uint256 tokenId = escrow.create_lock(initialAmount, lock_duration);
+    //     vm.stopPrank();
+
+    //     // 3. Get the votes balance for the account
+    //     uint256 votesBalance = escrow.getPastVotes(owner, 1);
+
+    //     // 4. Check if the votes balance matches the initial locked amount
+    //     assertEq(
+    //         votesBalance,
+    //         observedVotingPower,
+    //         "Votes balance should match the initial locked amount"
+    //     );
+    // }
 }
