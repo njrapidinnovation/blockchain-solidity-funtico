@@ -84,11 +84,11 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         uint token_id = escrow.create_lock(1e21, lockDuration);
         uint nft_bal = escrow.balanceOf(owner);
-        assertEq(nft_bal,1);
-        assertEq(escrow.tokenOfOwnerByIndex(owner,nft_bal-1), token_id);
-        assertEq(escrow.tokenOfOwnerByIndex(owner,nft_bal), 0);
+        assertEq(nft_bal, 1);
+        assertEq(escrow.tokenOfOwnerByIndex(owner, nft_bal - 1), token_id);
+        assertEq(escrow.tokenOfOwnerByIndex(owner, nft_bal), 0);
     }
-    
+
     function testCheckMintedNftOwner() public {
         vm.prank(owner);
         TICO.approve(address(escrow), 1e21);
@@ -105,7 +105,7 @@ contract VotingEscrowTest is Test {
         uint256 lockDuration = 7 * 24 * 3600; // 1 week
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
-        (int128 amount,uint end) = escrow.locked(1);
+        (int128 amount, uint end) = escrow.locked(1);
         assertEq(amount, 1e21);
         assertEq(end, ((block.timestamp + lockDuration) / WEEK) * WEEK);
     }
@@ -127,7 +127,7 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
-        escrow.safeTransferFrom(owner, bob, 1,"");
+        escrow.safeTransferFrom(owner, bob, 1, "");
         address newOwner = escrow.ownerOf(1);
         assertEq(newOwner, bob);
     }
@@ -146,15 +146,15 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
-        escrow.approve(bob,1);
+        escrow.approve(bob, 1);
 
-        bool isApprovedOrOwner = escrow.isApprovedOrOwner(bob,1);
+        bool isApprovedOrOwner = escrow.isApprovedOrOwner(bob, 1);
         assertEq(isApprovedOrOwner, true);
 
         address getApprovedAddress = escrow.getApproved(1);
         assertEq(getApprovedAddress, bob);
         vm.prank(bob);
-        escrow.safeTransferFrom(owner, bob, 1,"");
+        escrow.safeTransferFrom(owner, bob, 1, "");
         address newOwner = escrow.ownerOf(1);
         assertEq(newOwner, bob);
     }
@@ -162,7 +162,7 @@ contract VotingEscrowTest is Test {
     function testWrongId() public {
         vm.startPrank(owner);
         vm.expectRevert();
-        escrow.approve(bob,1);
+        escrow.approve(bob, 1);
     }
 
     function testApproveForMyself() public {
@@ -171,7 +171,7 @@ contract VotingEscrowTest is Test {
         uint256 lockDuration = 7 * 24 * 3600; // 1 week
         escrow.create_lock(1e21, lockDuration);
         vm.expectRevert();
-        escrow.approve(owner,1);
+        escrow.approve(owner, 1);
         vm.stopPrank();
     }
 
@@ -185,7 +185,7 @@ contract VotingEscrowTest is Test {
         // escrow.setApprovalForAll(bob, true);
         vm.startPrank(bob);
         vm.expectRevert();
-        escrow.approve(alice,1);
+        escrow.approve(alice, 1);
         vm.stopPrank();
     }
 
@@ -207,10 +207,10 @@ contract VotingEscrowTest is Test {
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
         escrow.setApprovalForAll(bob, true);
-        bool getApprovedAll = escrow.isApprovedForAll(owner,bob);
+        bool getApprovedAll = escrow.isApprovedForAll(owner, bob);
         assertEq(getApprovedAll, true);
         vm.prank(bob);
-        escrow.safeTransferFrom(owner, bob, 1,"");
+        escrow.safeTransferFrom(owner, bob, 1, "");
         address newOwner = escrow.ownerOf(1);
         assertEq(newOwner, bob);
     }
@@ -223,7 +223,7 @@ contract VotingEscrowTest is Test {
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
         escrow.setApprovalForAll(bob, true);
-        bool getApprovedAll = escrow.isApprovedForAll(owner,bob);
+        bool getApprovedAll = escrow.isApprovedForAll(owner, bob);
         assertEq(getApprovedAll, true);
         vm.prank(bob);
         escrow.safeTransferFrom(owner, bob, 1);
@@ -238,7 +238,7 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         escrow.create_lock(1e21, lockDuration);
         vm.prank(owner);
-        escrow.approve(bob,1);
+        escrow.approve(bob, 1);
         vm.prank(bob);
         escrow.transferFrom(owner, bob, 1);
         address newOwner = escrow.ownerOf(1);
@@ -263,7 +263,6 @@ contract VotingEscrowTest is Test {
         bool support = escrow.supportsInterface(0x01ffc9a7);
         assertTrue(support == true);
     }
-
 
     function testCreateLock() public {
         vm.prank(owner);
@@ -299,5 +298,90 @@ contract VotingEscrowTest is Test {
         for (uint256 i = 0; i < _amounts.length; i++) {
             TICO.mint(_accounts[i], _amounts[i]);
         }
+    }
+
+    function testIncreaseAmount() public {
+        // 1. Prepare test data
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        uint256 initialAmount = 1e19; // Initial locked amount
+        uint256 increaseAmount = 1e18; // Amount to be added to the existing lock
+
+        // 2. Create a new lock with an initial amount
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), initialAmount);
+        uint256 tokenId = escrow.create_lock(initialAmount, lockDuration);
+
+        // 3. Increase the locked amount
+        TICO.approve(address(escrow), increaseAmount);
+        escrow.increase_amount(tokenId, increaseAmount);
+        vm.stopPrank();
+
+        // 4. Check the updated locked amount
+        (int128 updatedAmount, uint updatedEnd) = escrow.locked(tokenId);
+        uint256 expectedEnd = ((block.timestamp + lockDuration) / WEEK) * WEEK;
+
+        assertEq(
+            updatedAmount,
+            int128(int256(initialAmount + increaseAmount)),
+            "Unexpected updated locked amount"
+        );
+        assertEq(
+            updatedEnd,
+            expectedEnd,
+            "Unexpected updated lock end timestamp"
+        );
+    }
+
+    function testIncreaseAmountExpiredLock() public {
+        // 1. Prepare test data
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        uint256 initialAmount = 1e19; // Initial locked amount
+        uint256 increaseAmount = 1e18; // Amount to be added to the existing lock
+
+        // 2. Create a new lock with an initial amount and make it expired
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), initialAmount + increaseAmount);
+        uint256 tokenId = escrow.create_lock(initialAmount, lockDuration);
+
+        // 3. Fast forward time to make the lock expired using vm.warp
+        vm.warp(MAXTIME + WEEK + 1);
+
+        // 3. Try to increase the locked amount (should revert)
+        vm.expectRevert("Cannot add to expired lock. Withdraw");
+        escrow.increase_amount(tokenId, increaseAmount);
+        vm.stopPrank();
+    }
+
+    function testIncreaseAmountWithoutLock() public {
+        // 1. Prepare test data
+        uint256 increaseAmount = 5e20; // Amount to be added to the non-existing lock
+
+        // 2. Try to increase the locked amount for a non-existing lock (should revert)
+        vm.expectRevert();
+        escrow.increase_amount(9999, increaseAmount); // Using a non-existing token ID
+    }
+
+    function testIncreaseAmountWithZeroValue() public {
+        // 1. Prepare test data
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+
+        // 2. Create a new lock with an initial amount
+        vm.startPrank(owner);
+        TICO.approve(address(escrow), 1e21);
+        uint256 tokenId = escrow.create_lock(1e21, lockDuration);
+
+        // 3. Try to increase the locked amount with zero value (should revert)
+        vm.expectRevert();
+        escrow.increase_amount(tokenId, 0);
+        vm.stopPrank();
+    }
+
+    // Test case: Attempt to increase amount with an invalid token ID
+    function testIncreaseAmountInvalidTokenId() public {
+        uint256 invalidTokenId = 9999; // Using an invalid token ID
+
+        // Attempt to increase the locked amount with an invalid token ID (should revert)
+        vm.expectRevert();
+        escrow.increase_amount(invalidTokenId, 1e18);
     }
 }
