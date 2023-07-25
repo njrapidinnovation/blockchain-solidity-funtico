@@ -71,6 +71,7 @@ contract VotingEscrow is IERC721 {
         uint ts
     );
     event Supply(uint prevSupply, uint supply);
+    event Withdraw(address indexed provider, uint tokenId, uint value, uint ts);
 
     /*//////////////////////////////////////////////////////////////
                                CONSTRUCTOR
@@ -509,6 +510,23 @@ contract VotingEscrow is IERC721 {
         _removeTokenFromOwnerList(_from, _tokenId);
         // Change count tracking
         ownerToNFTokenCount[_from] -= 1;
+    }
+
+    function _burn(uint _tokenId) internal {
+        require(
+            _isApprovedOrOwner(msg.sender, _tokenId),
+            "caller is not owner nor approved"
+        );
+
+        address owner = ownerOf(_tokenId);
+
+        // Clear approval
+        approve(address(0), _tokenId);
+        // checkpoint for gov
+        _moveTokenDelegates(delegates(owner), address(0), _tokenId);
+        // Remove token
+        _removeTokenFrom(msg.sender, _tokenId);
+        emit Transfer(owner, address(0), _tokenId);
     }
 
     /*///////////////////////////////////////////////////////////////
@@ -987,6 +1005,18 @@ contract VotingEscrow is IERC721 {
         return _create_lock(_value, _lock_duration, msg.sender);
     }
 
+    /// @notice Deposit `_value` tokens for `_to` and lock for `_lock_duration`
+    /// @param _value Amount to deposit
+    /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
+    /// @param _to Address to deposit
+    function create_lock_for(
+        uint _value,
+        uint _lock_duration,
+        address _to
+    ) external nonreentrant returns (uint) {
+        return _create_lock(_value, _lock_duration, _to);
+    }
+
     /// @notice Deposit and lock tokens for a user
     /// @param _tokenId NFT that holds lock
     /// @param _value Amount to deposit
@@ -1056,5 +1086,61 @@ contract VotingEscrow is IERC721 {
             _locked,
             DepositType.INCREASE_LOCK_AMOUNT
         );
+    }
+
+    /// @notice Extend the unlock time for `_tokenId`
+    /// @param _lock_duration New number of seconds until tokens unlock
+    function increase_unlock_time(
+        uint _tokenId,
+        uint _lock_duration
+    ) external nonreentrant {
+        assert(_isApprovedOrOwner(msg.sender, _tokenId));
+
+        LockedBalance memory _locked = locked[_tokenId];
+        uint unlock_time = ((block.timestamp + _lock_duration) / WEEK) * WEEK; // Locktime is rounded down to weeks
+
+        require(_locked.end > block.timestamp, "Lock expired");
+        require(_locked.amount > 0, "Nothing is locked");
+        require(unlock_time > _locked.end, "Can only increase lock duration");
+        require(
+            unlock_time <= block.timestamp + MAXTIME,
+            "Voting lock can be 4 years max"
+        );
+
+        _deposit_for(
+            _tokenId,
+            0,
+            unlock_time,
+            _locked,
+            DepositType.INCREASE_UNLOCK_TIME
+        );
+    }
+
+    /// @notice Withdraw all tokens for `_tokenId`
+    /// @dev Only possible if the lock has expired
+    function withdraw(uint _tokenId) external nonreentrant {
+        assert(_isApprovedOrOwner(msg.sender, _tokenId));
+        // require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
+
+        LockedBalance memory _locked = locked[_tokenId];
+        require(block.timestamp >= _locked.end, "The lock didn't expire");
+        uint value = uint(int256(_locked.amount));
+
+        locked[_tokenId] = LockedBalance(0, 0);
+        uint supply_before = supply;
+        supply = supply_before - value;
+
+        // old_locked can have either expired <= timestamp or zero end
+        // _locked has only 0 end
+        // Both can have >= 0 amount
+        _checkpoint(_tokenId, _locked, LockedBalance(0, 0));
+
+        assert(IERC20(token).transfer(msg.sender, value));
+
+        // Burn the NFT
+        _burn(_tokenId);
+
+        emit Withdraw(msg.sender, _tokenId, value, block.timestamp);
+        emit Supply(supply_before, supply_before - value);
     }
 }
