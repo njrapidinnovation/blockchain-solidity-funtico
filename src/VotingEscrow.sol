@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
-import {IERC721, IERC721Metadata} from "@openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
 /*
  modified this to use Openzeppelin but in source they used own contracts
  */
+import {IERC721, IERC721Metadata} from "@openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+import {IVotes} from "@openzeppelin-contracts/contracts/governance/utils/IVotes.sol";
 import {IERC20} from "@openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {IERC721Receiver} from "@openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
 
-contract VotingEscrow is IERC721 {
+contract VotingEscrow is IERC721, IVotes {
     enum DepositType {
         CREATE_LOCK_TYPE,
         INCREASE_LOCK_AMOUNT,
@@ -133,10 +134,10 @@ contract VotingEscrow is IERC721 {
                              METADATA STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    // string constant public name = "veNFT";
-    // string constant public symbol = "veNFT";
-    // string constant public version = "1.0.0";
-    // uint8 constant public decimals = 18;
+    string public constant name = "veNFT";
+    string public constant symbol = "veNFT";
+    string public constant version = "1.0.0";
+    uint8 public constant decimals = 18;
 
     // function setTeam(address _team) external {
     //     require(msg.sender == team);
@@ -715,6 +716,119 @@ contract VotingEscrow is IERC721 {
         } else {
             return _nCheckPoints;
         }
+    }
+
+    function _moveAllDelegates(
+        address owner,
+        address srcRep,
+        address dstRep
+    ) internal {
+        // You can only redelegate what you own
+        if (srcRep != dstRep) {
+            if (srcRep != address(0)) {
+                uint32 srcRepNum = numCheckpoints[srcRep];
+                uint[] storage srcRepOld = srcRepNum > 0
+                    ? checkpoints[srcRep][srcRepNum - 1].tokenIds
+                    : checkpoints[srcRep][0].tokenIds;
+                uint32 nextSrcRepNum = _findWhatCheckpointToWrite(srcRep);
+                uint[] storage srcRepNew = checkpoints[srcRep][nextSrcRepNum]
+                    .tokenIds;
+                // All the same except what owner owns
+                for (uint i = 0; i < srcRepOld.length; i++) {
+                    uint tId = srcRepOld[i];
+                    if (idToOwner[tId] != owner) {
+                        srcRepNew.push(tId);
+                    }
+                }
+
+                numCheckpoints[srcRep] = srcRepNum + 1;
+            }
+
+            if (dstRep != address(0)) {
+                uint32 dstRepNum = numCheckpoints[dstRep];
+                uint[] storage dstRepOld = dstRepNum > 0
+                    ? checkpoints[dstRep][dstRepNum - 1].tokenIds
+                    : checkpoints[dstRep][0].tokenIds;
+                uint32 nextDstRepNum = _findWhatCheckpointToWrite(dstRep);
+                uint[] storage dstRepNew = checkpoints[dstRep][nextDstRepNum]
+                    .tokenIds;
+                uint ownerTokenCount = ownerToNFTokenCount[owner];
+                require(
+                    dstRepOld.length + ownerTokenCount <= MAX_DELEGATES,
+                    "dstRep would have too many tokenIds"
+                );
+                // All the same
+                for (uint i = 0; i < dstRepOld.length; i++) {
+                    uint tId = dstRepOld[i];
+                    dstRepNew.push(tId);
+                }
+                // Plus all that's owned
+                for (uint i = 0; i < ownerTokenCount; i++) {
+                    uint tId = ownerToNFTokenIdList[owner][i];
+                    dstRepNew.push(tId);
+                }
+
+                numCheckpoints[dstRep] = dstRepNum + 1;
+            }
+        }
+    }
+
+    function _delegate(address delegator, address delegatee) internal {
+        /// @notice differs from `_delegate()` in `Comp.sol` to use `delegates` override method to simulate auto-delegation
+        address currentDelegate = delegates(delegator);
+
+        _delegates[delegator] = delegatee;
+
+        emit DelegateChanged(delegator, currentDelegate, delegatee);
+        _moveAllDelegates(delegator, currentDelegate, delegatee);
+    }
+
+    /**
+     * @notice Delegate votes from `msg.sender` to `delegatee`
+     * @param delegatee The address to delegate votes to
+     */
+    function delegate(address delegatee) public {
+        if (delegatee == address(0)) delegatee = msg.sender;
+        return _delegate(msg.sender, delegatee);
+    }
+
+    function delegateBySig(
+        address delegatee,
+        uint nonce,
+        uint expiry,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) public {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes(name)),
+                keccak256(bytes(version)),
+                block.chainid,
+                address(this)
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(DELEGATION_TYPEHASH, delegatee, nonce, expiry)
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", domainSeparator, structHash)
+        );
+        address signatory = ecrecover(digest, v, r, s);
+        require(
+            signatory != address(0),
+            "VotingEscrow::delegateBySig: invalid signature"
+        );
+        require(
+            nonce == nonces[signatory]++,
+            "VotingEscrow::delegateBySig: invalid nonce"
+        );
+        require(
+            block.timestamp <= expiry,
+            "VotingEscrow::delegateBySig: signature expired"
+        );
+        return _delegate(signatory, delegatee);
     }
 
     /*///////////////////////////////////////////////////////////////
