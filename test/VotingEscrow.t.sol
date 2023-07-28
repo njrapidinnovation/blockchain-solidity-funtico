@@ -6,14 +6,20 @@ import "forge-std/Test.sol";
 import "src/TicoToken.sol";
 import "src/VotingEscrow.sol";
 
+import "src/utils/SigUtils.sol";
+
 contract VotingEscrowTest is Test {
     VotingEscrow escrow;
     Tico TICO;
-    address owner = makeAddr("owner");
+    SigUtils internal sigUtils;
+
+    address owner;
     address bob = makeAddr("0x01");
     address alice = makeAddr("0x02");
     uint internal constant MAXTIME = 4 * 365 * 86400;
     uint internal constant WEEK = 1 weeks;
+
+    uint256 internal ownerPrivateKey;
 
     struct Checkpoint {
         uint timestamp;
@@ -23,6 +29,10 @@ contract VotingEscrowTest is Test {
     function setUp() public {
         // mintTico(owners, amounts);
         // VeArtProxy artProxy = new VeArtProxy();
+
+        ownerPrivateKey = 0xA11CE;
+        owner = vm.addr(ownerPrivateKey);
+
         TICO = new Tico();
         address[] memory accounts = new address[](1);
         accounts[0] = owner;
@@ -30,6 +40,8 @@ contract VotingEscrowTest is Test {
         amounts[0] = 1e21;
         mintTico(accounts, amounts);
         escrow = new VotingEscrow(address(TICO));
+
+        sigUtils = new SigUtils(escrow.DOMAIN_TYPEHASH());
     }
 
     /* CREATE LOCK TESTS */
@@ -827,5 +839,22 @@ contract VotingEscrowTest is Test {
             totalExpectedVotes,
             "Votes balance should match the expected total voting power"
         );
+    }
+
+    function testDelegateBySig() public {
+
+        address delegatee = makeAddr("Delegatee");
+        SigUtils.Delegation memory delegation = SigUtils.Delegation({
+            delegatee:delegatee,
+            nonce:0,
+            expiry:10e9
+        });
+
+        bytes32 digest = sigUtils.getTypedDataHash(delegation);
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPrivateKey, digest);
+
+        vm.prank(delegatee);
+        escrow.delegateBySig(delegatee, 0, 10e9, v, r, s);
     }
 }
