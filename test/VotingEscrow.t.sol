@@ -309,10 +309,9 @@ contract VotingEscrowTest is Test {
         assertEq(escrow.balanceOf(address(owner)), 2);
     }
 
-    function mintTico(
-        address[] memory _accounts,
-        uint256[] memory _amounts
-    ) public {
+    function mintTico(address[] memory _accounts, uint256[] memory _amounts)
+        public
+    {
         for (uint256 i = 0; i < _amounts.length; i++) {
             TICO.mint(_accounts[i], _amounts[i]);
         }
@@ -563,11 +562,10 @@ contract VotingEscrowTest is Test {
         uint256 balanceAfter = TICO.balanceOf(owner);
 
         // 7. Check if the lock is deleted and token balance is updated
-        // assertEq(
-        //     escrow.locked(tokenId).amount,
-        //     int128(0),
-        //     "Lock should be deleted after withdrawal"
-        // );
+
+        (int128 amount, ) = escrow.locked(tokenId);
+
+        assertEq(amount, int128(0), "Lock should be deleted after withdrawal");
         assertEq(
             balanceAfter - balanceBefore,
             initialAmount,
@@ -617,21 +615,24 @@ contract VotingEscrowTest is Test {
             lockDuration,
             block.timestamp
         );
-        // uint256 totalSupplyAtHalftime = escrow.totalSupplyAtT(
-        //     (block.timestamp + MAXTIME) / 2
-        // );
-        // uint expectedSupplyAtHalftime = calculateExpectedVotingPower(
-        //     initialAmount,
-        //     lockDuration,
-        //     (block.timestamp + MAXTIME) / 2
-        // );
+        console.log(totalSupply, expectedSupply);
+
+        uint256 totalSupplyAtHalftime = escrow.totalSupplyAtT(
+            block.timestamp + (MAXTIME / 2)
+        );
+        uint expectedSupplyAtHalftime = calculateExpectedVotingPower(
+            initialAmount,
+            lockDuration,
+            block.timestamp + (MAXTIME / 2)
+        );
+        console.log(totalSupplyAtHalftime, expectedSupplyAtHalftime);
         // 5. Check if the calculated total voting power matches the initial locked amount
         assertEq(totalSupply, expectedSupply, " voting power should match");
-        // assertEq(
-        //     totalSupplyAtHalftime,
-        //     expectedSupplyAtHalftime,
-        //     "Total voting power should match the initial locked amount"
-        // );
+        assertEq(
+            totalSupplyAtHalftime,
+            expectedSupplyAtHalftime,
+            "Total voting power should match the initial locked amount"
+        );
     }
 
     // testcase for create_lock_for
@@ -699,8 +700,8 @@ contract VotingEscrowTest is Test {
         uint256 initialAmount,
         uint256 lockDuration,
         uint256 timestamp
-    ) internal pure returns (uint256) {
-        uint256 unlockTime = ((timestamp + lockDuration) / WEEK) * WEEK; // Locktime is rounded down to weeks
+    ) internal view returns (uint256) {
+        uint256 unlockTime = ((block.timestamp + lockDuration) / WEEK) * WEEK; // Locktime is rounded down to weeks
         int128 slope = int128(int256(initialAmount / MAXTIME));
         uint contribution = uint(
             int256(slope * int128(int256(unlockTime - timestamp)))
