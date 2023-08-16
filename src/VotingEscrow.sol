@@ -6,8 +6,9 @@ pragma solidity 0.8.19;
  */
 import {IERC721, IERC721Metadata} from "@openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
 import {IVotes} from "@openzeppelin-contracts/contracts/governance/utils/IVotes.sol";
-import {IERC20} from "@openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {IERC721Receiver} from "@openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
+import {IVotingEscrow} from "src/interfaces/IVotingEscrow.sol";
+import "./src/interfaces/IERC20.sol";
 
 contract VotingEscrow is IERC721, IVotes {
     enum DepositType {
@@ -98,8 +99,10 @@ contract VotingEscrow is IERC721, IVotes {
     uint internal tokenId;
 
     /// @notice Contract constructor
-    /// @param token_addr `VELO` token address
-    constructor(address token_addr /*,address art_proxy*/) {
+    /// @param token_addr `TICO` token address
+    constructor(
+        address token_addr /*,address art_proxy*/
+    ) {
         token = token_addr;
         // voter = msg.sender;
         team = msg.sender;
@@ -124,9 +127,11 @@ contract VotingEscrow is IERC721, IVotes {
 
     /// @dev Interface identification is specified in ERC-165.
     /// @param _interfaceID Id of the interface
-    function supportsInterface(
-        bytes4 _interfaceID
-    ) external view returns (bool) {
+    function supportsInterface(bytes4 _interfaceID)
+        external
+        view
+        returns (bool)
+    {
         return supportedInterfaces[_interfaceID];
     }
 
@@ -212,10 +217,11 @@ contract VotingEscrow is IERC721, IVotes {
     /// @dev Checks if `_operator` is an approved operator for `_owner`.
     /// @param _owner The address that owns the NFTs.
     /// @param _operator The address that acts on behalf ofp the owner.
-    function isApprovedForAll(
-        address _owner,
-        address _operator
-    ) external view returns (bool) {
+    function isApprovedForAll(address _owner, address _operator)
+        external
+        view
+        returns (bool)
+    {
         return (ownerToOperators[_owner])[_operator];
     }
 
@@ -273,10 +279,11 @@ contract VotingEscrow is IERC721, IVotes {
     /// @param _spender address of the spender to query
     /// @param _tokenId uint ID of the token to be transferred
     /// @return bool whether the msg.sender is approved for the given token ID, is an operator of the owner, or is the owner of the token
-    function _isApprovedOrOwner(
-        address _spender,
-        uint _tokenId
-    ) internal view returns (bool) {
+    function _isApprovedOrOwner(address _spender, uint _tokenId)
+        internal
+        view
+        returns (bool)
+    {
         address owner = idToOwner[_tokenId];
         bool spenderIsOwner = owner == _spender;
         bool spenderIsApproved = _spender == idToApprovals[_tokenId];
@@ -284,10 +291,11 @@ contract VotingEscrow is IERC721, IVotes {
         return spenderIsOwner || spenderIsApproved || spenderIsApprovedForAll;
     }
 
-    function isApprovedOrOwner(
-        address _spender,
-        uint _tokenId
-    ) external view returns (bool) {
+    function isApprovedOrOwner(address _spender, uint _tokenId)
+        external
+        view
+        returns (bool)
+    {
         return _isApprovedOrOwner(_spender, _tokenId);
     }
 
@@ -329,7 +337,11 @@ contract VotingEscrow is IERC721, IVotes {
     /// @param _from The current owner of the NFT.
     /// @param _to The new owner.
     /// @param _tokenId The NFT to transfer.
-    function transferFrom(address _from, address _to, uint _tokenId) external {
+    function transferFrom(
+        address _from,
+        address _to,
+        uint _tokenId
+    ) external {
         _transferFrom(_from, _to, _tokenId, msg.sender);
     }
 
@@ -423,10 +435,11 @@ contract VotingEscrow is IERC721, IVotes {
     mapping(uint => uint) internal tokenToOwnerIndex;
 
     /// @dev  Get token by index
-    function tokenOfOwnerByIndex(
-        address _owner,
-        uint _tokenIndex
-    ) external view returns (uint) {
+    function tokenOfOwnerByIndex(address _owner, uint _tokenIndex)
+        external
+        view
+        returns (uint)
+    {
         return ownerToNFTokenIdList[_owner][_tokenIndex];
     }
 
@@ -593,10 +606,11 @@ contract VotingEscrow is IERC721, IVotes {
         return votes;
     }
 
-    function getPastVotesIndex(
-        address account,
-        uint timestamp
-    ) public view returns (uint32) {
+    function getPastVotesIndex(address account, uint timestamp)
+        public
+        view
+        returns (uint32)
+    {
         uint32 nCheckpoints = numCheckpoints[account];
         if (nCheckpoints == 0) {
             return 0;
@@ -627,10 +641,11 @@ contract VotingEscrow is IERC721, IVotes {
         return lower;
     }
 
-    function getPastVotes(
-        address account,
-        uint timestamp
-    ) public view returns (uint) {
+    function getPastVotes(address account, uint timestamp)
+        public
+        view
+        returns (uint)
+    {
         uint32 _checkIndex = getPastVotesIndex(account, timestamp);
         // Sum votes
         uint[] storage _tokenIds = checkpoints[account][_checkIndex].tokenIds;
@@ -643,9 +658,11 @@ contract VotingEscrow is IERC721, IVotes {
         return votes;
     }
 
-    function getPastTotalSupply(
-        uint256 timestamp
-    ) external view returns (uint) {
+    function getPastTotalSupply(uint256 timestamp)
+        external
+        view
+        returns (uint)
+    {
         return totalSupplyAtT(timestamp);
     }
 
@@ -702,9 +719,11 @@ contract VotingEscrow is IERC721, IVotes {
         }
     }
 
-    function _findWhatCheckpointToWrite(
-        address account
-    ) internal view returns (uint32) {
+    function _findWhatCheckpointToWrite(address account)
+        internal
+        view
+        returns (uint32)
+    {
         uint _timestamp = block.timestamp;
         uint32 _nCheckPoints = numCheckpoints[account];
 
@@ -840,10 +859,11 @@ contract VotingEscrow is IERC721, IVotes {
     /// @param _tokenId NFT for lock
     /// @param _t Epoch time to return voting power at
     /// @return User voting power
-    function _balanceOfNFT(
-        uint _tokenId,
-        uint _t
-    ) internal view returns (uint) {
+    function _balanceOfNFT(uint _tokenId, uint _t)
+        internal
+        view
+        returns (uint)
+    {
         uint _epoch = user_point_epoch[_tokenId];
         if (_epoch == 0) {
             return 0;
@@ -863,10 +883,11 @@ contract VotingEscrow is IERC721, IVotes {
     /// @param point The point (bias/slope) to start search from
     /// @param t Time to calculate the total voting power at
     /// @return Total voting power at that time
-    function _supply_at(
-        Point memory point,
-        uint t
-    ) internal view returns (uint) {
+    function _supply_at(Point memory point, uint t)
+        internal
+        view
+        returns (uint)
+    {
         Point memory last_point = point;
         uint t_i = (last_point.ts / WEEK) * WEEK;
         for (uint i = 0; i < 255; ++i) {
@@ -1112,10 +1133,11 @@ contract VotingEscrow is IERC721, IVotes {
     /// @notice Deposit `_value` tokens for `msg.sender` and lock for `_lock_duration`
     /// @param _value Amount to deposit
     /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
-    function create_lock(
-        uint _value,
-        uint _lock_duration
-    ) external nonreentrant returns (uint) {
+    function create_lock(uint _value, uint _lock_duration)
+        external
+        nonreentrant
+        returns (uint)
+    {
         return _create_lock(_value, _lock_duration, msg.sender);
     }
 
@@ -1204,10 +1226,10 @@ contract VotingEscrow is IERC721, IVotes {
 
     /// @notice Extend the unlock time for `_tokenId`
     /// @param _lock_duration New number of seconds until tokens unlock
-    function increase_unlock_time(
-        uint _tokenId,
-        uint _lock_duration
-    ) external nonreentrant {
+    function increase_unlock_time(uint _tokenId, uint _lock_duration)
+        external
+        nonreentrant
+    {
         assert(_isApprovedOrOwner(msg.sender, _tokenId));
 
         LockedBalance memory _locked = locked[_tokenId];
