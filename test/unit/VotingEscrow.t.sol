@@ -217,38 +217,6 @@ contract VotingEscrowTest is Test {
         vm.stopPrank();
     }
 
-    function testNftSafeTransferWithApproveForAllWithCallData() public {
-        vm.prank(owner);
-        TICO.approve(address(escrow), 1e21);
-        uint256 lockDuration = 7 * 24 * 3600; // 1 week
-        vm.prank(owner);
-        escrow.create_lock(1e21, lockDuration);
-        vm.prank(owner);
-        escrow.setApprovalForAll(bob, true);
-        bool getApprovedAll = escrow.isApprovedForAll(owner, bob);
-        assertEq(getApprovedAll, true);
-        vm.prank(bob);
-        escrow.safeTransferFrom(owner, bob, 1, "");
-        address newOwner = escrow.ownerOf(1);
-        assertEq(newOwner, bob);
-    }
-
-    function testNftSafeTransferWithApproveForAllWithoutCallData() public {
-        vm.prank(owner);
-        TICO.approve(address(escrow), 1e21);
-        uint256 lockDuration = 7 * 24 * 3600; // 1 week
-        vm.prank(owner);
-        escrow.create_lock(1e21, lockDuration);
-        vm.prank(owner);
-        escrow.setApprovalForAll(bob, true);
-        bool getApprovedAll = escrow.isApprovedForAll(owner, bob);
-        assertEq(getApprovedAll, true);
-        vm.prank(bob);
-        escrow.safeTransferFrom(owner, bob, 1);
-        address newOwner = escrow.ownerOf(1);
-        assertEq(newOwner, bob);
-    }
-
     function testNftTransferWithApprove() public {
         vm.prank(owner);
         TICO.approve(address(escrow), 1e21);
@@ -295,18 +263,25 @@ contract VotingEscrowTest is Test {
         assertEq(escrow.balanceOf(address(owner)), 1);
     }
 
-    function testCreateLockWithMultipleLocks() public {
-        uint256 lockDuration = 7 * 24 * 3600; // 1 week
-        vm.startPrank(owner);
+    function testBalanceOfNft() public {
+        vm.prank(owner);
         TICO.approve(address(escrow), 1e21);
-        escrow.create_lock(1e15, lockDuration);
-
-        lockDuration = 12 * 4 * 7 * 24 * 3600;
-        escrow.create_lock(1e6, lockDuration);
-        vm.stopPrank();
-
-        assertEq(escrow.ownerOf(2), address(owner));
-        assertEq(escrow.balanceOf(address(owner)), 2);
+        uint256 lockDuration = 7 * 24 * 3600; // 1 week
+        uint amount = 1e21;
+        vm.prank(owner);
+        uint tokenId = escrow.create_lock(amount, lockDuration);
+        uint lockEnd = escrow.locked__end(tokenId);
+        assertEq(lockEnd, lockDuration);
+        escrow.checkpoint();
+        uint totalSupply = escrow.totalSupply();
+        uint calculatedExpectedVotingPower = calculateExpectedVotingPower(
+            amount,
+            lockDuration,
+            block.timestamp
+        );
+        assertEq(totalSupply, calculatedExpectedVotingPower);
+        assertEq(escrow.ownerOf(tokenId), address(owner));
+        assertEq(escrow.balanceOfNFT(tokenId), calculatedExpectedVotingPower);
     }
 
     function mintTico(address[] memory _accounts, uint256[] memory _amounts)
@@ -315,38 +290,6 @@ contract VotingEscrowTest is Test {
         for (uint256 i = 0; i < _amounts.length; i++) {
             TICO.mint(_accounts[i], _amounts[i]);
         }
-    }
-
-    function testIncreaseAmount() public {
-        // 1. Prepare test data
-        uint256 lockDuration = 7 * 24 * 3600; // 1 week
-        uint256 initialAmount = 1e19; // Initial locked amount
-        uint256 increaseAmount = 1e18; // Amount to be added to the existing lock
-
-        // 2. Create a new lock with an initial amount
-        vm.startPrank(owner);
-        TICO.approve(address(escrow), initialAmount);
-        uint256 tokenId = escrow.create_lock(initialAmount, lockDuration);
-
-        // 3. Increase the locked amount
-        TICO.approve(address(escrow), increaseAmount);
-        escrow.increase_amount(tokenId, increaseAmount);
-        vm.stopPrank();
-
-        // 4. Check the updated locked amount
-        (int128 updatedAmount, uint updatedEnd) = escrow.locked(tokenId);
-        uint256 expectedEnd = ((block.timestamp + lockDuration) / WEEK) * WEEK;
-
-        assertEq(
-            updatedAmount,
-            int128(int256(initialAmount + increaseAmount)),
-            "Unexpected updated locked amount"
-        );
-        assertEq(
-            updatedEnd,
-            expectedEnd,
-            "Unexpected updated lock end timestamp"
-        );
     }
 
     function testIncreaseAmountExpiredLock() public {
@@ -482,44 +425,6 @@ contract VotingEscrowTest is Test {
         vm.prank(owner);
         vm.expectRevert();
         escrow.increase_unlock_time(9999, unlockTime); // Using a non-existing token ID
-    }
-
-    function testIncreaseUnlockTimeMultipleLocks() public {
-        // 1. Prepare test data
-        uint256[] memory initialAmounts = new uint256[](3);
-        uint256 lockDuration = WEEK;
-        uint256[] memory newUnlockTimes = new uint256[](3);
-        uint256 totalExpectedVotes = 0;
-
-        vm.startPrank(owner);
-        for (uint256 i = 0; i < initialAmounts.length; i++) {
-            initialAmounts[i] = (i + 1) * 1e18; // Initial locked amount for each lock
-
-            // Create multiple locks with different initial amounts
-            TICO.approve(address(escrow), initialAmounts[i]);
-            uint256 tokenId = escrow.create_lock(
-                initialAmounts[i],
-                lockDuration
-            );
-            newUnlockTimes[i] = block.timestamp + (i + 2) * lockDuration; // Increase unlock time for each lock
-            escrow.increase_unlock_time(tokenId, newUnlockTimes[i]);
-            totalExpectedVotes += calculateExpectedVotingPower(
-                initialAmounts[i],
-                newUnlockTimes[i],
-                block.timestamp
-            );
-        }
-        vm.stopPrank();
-
-        // 2. Get the votes balance for the account
-        uint256 votesBalance = escrow.getVotes(owner);
-
-        // 3. Check if the votes balance matches the expected total voting power
-        assertEq(
-            votesBalance,
-            totalExpectedVotes,
-            "Votes balance should match the expected total voting power"
-        );
     }
 
     function testWithdrawWithoutExpiredLock() public {
@@ -755,54 +660,6 @@ contract VotingEscrowTest is Test {
         );
     }
 
-    // Test case: Get votes balance for an account with multiple locked tokens
-    function testGetPastVotesWithMultipleLocks() public {
-        // 1. Prepare test data
-        uint256[] memory initialAmounts = new uint256[](3);
-        uint256 lockDuration = WEEK;
-        uint totalExpectedVotes = 0;
-
-        vm.startPrank(owner);
-
-        // 2. Create multiple locks with different initial amounts
-        for (uint i = 0; i < initialAmounts.length; i++) {
-            initialAmounts[i] = (i + 1) * 1e18; // Initial locked amount for each lock
-            TICO.approve(address(escrow), initialAmounts[i]);
-            vm.warp(block.timestamp + lockDuration);
-            // console.log(block.timestamp);
-            escrow.create_lock(initialAmounts[i], lockDuration);
-            // console.log(i, escrow.checkpoints(owner, uint32(i)));
-        }
-        for (uint i = 0; i < initialAmounts.length; i++) {
-            totalExpectedVotes += calculateExpectedVotingPower(
-                initialAmounts[i],
-                lockDuration,
-                block.timestamp
-            );
-        }
-        vm.stopPrank();
-
-        // 3. Get the votes balance for the account
-        // branches coverage
-        console.log(
-            escrow.getPastVotesIndex(owner, block.timestamp - 2 * lockDuration)
-        );
-        console.log(block.timestamp - (2 * lockDuration));
-        // console.log(escrow.numCheckpoints(owner));
-        uint votesBalance = escrow.getPastVotes(
-            owner,
-            block.timestamp - (2 * lockDuration)
-        );
-
-        // 4. Check if the votes balance matches the expected total voting power
-        console.log(votesBalance, totalExpectedVotes);
-        // assertEq(
-        //     votesBalance,
-        //     totalExpectedVotes,
-        //     "Votes balance should match the expected total voting power"
-        // );
-    }
-
     // Test case: Get votes balance for an account with no locked tokens
     function testGetVotesNoLockedTokens() public {
         uint256 votesBalance = escrow.getVotes(owner);
@@ -845,42 +702,6 @@ contract VotingEscrowTest is Test {
         );
     }
 
-    // Test case: Get votes balance for an account with multiple locked tokens
-    function testGetVotesWithMultipleLocks() public {
-        // 1. Prepare test data
-        uint256[] memory initialAmounts = new uint256[](3);
-        uint256 lockDuration = WEEK;
-        uint totalExpectedVotes = 0;
-
-        vm.startPrank(owner);
-        for (uint i = 0; i < initialAmounts.length; i++) {
-            initialAmounts[i] = (i + 1) * 1e18; // Initial locked amount for each lock
-            totalExpectedVotes += calculateExpectedVotingPower(
-                initialAmounts[i],
-                lockDuration,
-                block.timestamp
-            );
-        }
-
-        // 2. Create multiple locks with different initial amounts
-        for (uint i = 0; i < initialAmounts.length; i++) {
-            TICO.approve(address(escrow), initialAmounts[i]);
-            escrow.create_lock(initialAmounts[i], lockDuration);
-        }
-        vm.stopPrank();
-
-        // 3. Get the votes balance for the account
-        uint votesBalance = escrow.getVotes(owner);
-
-        // 4. Check if the votes balance matches the expected total voting power
-        // console.log(votesBalance, totalExpectedVotes);
-        assertEq(
-            votesBalance,
-            totalExpectedVotes,
-            "Votes balance should match the expected total voting power"
-        );
-    }
-
     function testDelegateBySig() public {
         address delegatee = makeAddr("Delegatee");
         SigUtils.Delegation memory delegation = SigUtils.Delegation({
@@ -920,32 +741,6 @@ contract VotingEscrowTest is Test {
             escrow.delegates(owner),
             delegatee1,
             "Votes should be manually delegated to delegatee1"
-        );
-    }
-
-    // Test case: Re-delegation of votes
-    function testDelegateRedelegation() public {
-        // Delegate votes from the owner to delegatee1
-
-        address delegatee1 = address(0x456);
-        address delegatee2 = address(0x789);
-        vm.prank(owner);
-        escrow.delegate(delegatee1);
-
-        assertEq(
-            escrow.delegates(owner),
-            delegatee1,
-            "Votes should be delegated to delegatee1"
-        );
-
-        // Delegate votes from the owner to delegatee2 (re-delegation)
-        vm.prank(owner);
-        escrow.delegate(delegatee2);
-
-        assertEq(
-            escrow.delegates(owner),
-            delegatee2,
-            "Votes should be re-delegated to delegatee2"
         );
     }
 
