@@ -11,24 +11,28 @@ interface IVotingEscrow {
 
     function token() external view returns (address);
 
-    function team() external returns (address);
+    // function team() external returns (address);
 
     function epoch() external view returns (uint);
 
-    function point_history(uint loc) external view returns (Point memory);
+    function getPointHistory(uint loc) external view returns (Point memory);
 
-    function user_point_history(
-        uint tokenId,
-        uint loc
-    ) external view returns (Point memory);
+    function getUserPointHistory(uint tokenId, uint _epoch)
+        external
+        view
+        returns (Point memory);
 
-    function user_point_epoch(uint tokenId) external view returns (uint);
+    function getUserPointEpoch(uint tokenId) external view returns (uint);
 
     function ownerOf(uint) external view returns (address);
 
     function isApprovedOrOwner(address, uint) external view returns (bool);
 
-    function transferFrom(address, address, uint) external;
+    function transferFrom(
+        address,
+        address,
+        uint
+    ) external;
 
     function voting(uint tokenId) external;
 
@@ -42,7 +46,11 @@ interface IVotingEscrow {
 
     function deposit_for(uint tokenId, uint value) external;
 
-    function create_lock_for(uint, uint, address) external returns (uint);
+    function create_lock_for(
+        uint,
+        uint,
+        address
+    ) external returns (uint);
 
     function balanceOfNFT(uint) external view returns (uint);
 

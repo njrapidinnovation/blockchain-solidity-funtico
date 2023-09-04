@@ -113,14 +113,14 @@ contract RewardsDistributor is IRewardsDistributor {
         uint _timestamp
     ) external view returns (uint) {
         address ve = voting_escrow;
-        uint max_user_epoch = IVotingEscrow(ve).user_point_epoch(_tokenId);
+        uint max_user_epoch = IVotingEscrow(ve).getUserPointEpoch(_tokenId);
         uint epoch = _find_timestamp_user_epoch(
             ve,
             _tokenId,
             _timestamp,
             max_user_epoch
         );
-        IVotingEscrow.Point memory pt = IVotingEscrow(ve).user_point_history(
+        IVotingEscrow.Point memory pt = IVotingEscrow(ve).getUserPointHistory(
             _tokenId,
             epoch
         );
@@ -185,7 +185,7 @@ contract RewardsDistributor is IRewardsDistributor {
                 break;
             } else {
                 uint epoch = _find_timestamp_epoch(ve, t);
-                IVotingEscrow.Point memory pt = IVotingEscrow(ve).point_history(
+                IVotingEscrow.Point memory pt = IVotingEscrow(ve).getPointHistory(
                     epoch
                 );
                 int128 dt = 0;
@@ -210,7 +210,7 @@ contract RewardsDistributor is IRewardsDistributor {
         uint user_epoch = 0;
         uint to_distribute = 0;
 
-        uint max_user_epoch = IVotingEscrow(ve).user_point_epoch(_tokenId);
+        uint max_user_epoch = IVotingEscrow(ve).getUserPointEpoch(_tokenId);
         uint _start_time = start_time;
 
         if (max_user_epoch == 0) return 0;
@@ -230,7 +230,7 @@ contract RewardsDistributor is IRewardsDistributor {
         if (user_epoch == 0) user_epoch = 1;
 
         IVotingEscrow.Point memory user_point = IVotingEscrow(ve)
-            .user_point_history(_tokenId, user_epoch);
+            .getUserPointHistory(_tokenId, user_epoch);
 
         if (week_cursor == 0)
             week_cursor = ((user_point.ts + WEEK - 1) / WEEK) * WEEK;
@@ -248,7 +248,7 @@ contract RewardsDistributor is IRewardsDistributor {
                 if (user_epoch > max_user_epoch) {
                     user_point = IVotingEscrow.Point(0, 0, 0, 0);
                 } else {
-                    user_point = IVotingEscrow(ve).user_point_history(
+                    user_point = IVotingEscrow(ve).getUserPointHistory(
                         _tokenId,
                         user_epoch
                     );
@@ -289,7 +289,7 @@ contract RewardsDistributor is IRewardsDistributor {
         for (uint i = 0; i < 128; i++) {
             if (_min >= _max) break;
             uint _mid = (_min + _max + 2) / 2;
-            IVotingEscrow.Point memory pt = IVotingEscrow(ve).point_history(
+            IVotingEscrow.Point memory pt = IVotingEscrow(ve).getPointHistory(
                 _mid
             );
             if (pt.ts <= _timestamp) {
@@ -313,7 +313,7 @@ contract RewardsDistributor is IRewardsDistributor {
             if (_min >= _max) break;
             uint _mid = (_min + _max + 2) / 2;
             IVotingEscrow.Point memory pt = IVotingEscrow(ve)
-                .user_point_history(tokenId, _mid);
+                .getUserPointHistory(tokenId, _mid);
             if (pt.ts <= _timestamp) {
                 _min = _mid;
             } else {
@@ -331,7 +331,7 @@ contract RewardsDistributor is IRewardsDistributor {
         uint user_epoch = 0;
         uint to_distribute = 0;
 
-        uint max_user_epoch = IVotingEscrow(ve).user_point_epoch(_tokenId);
+        uint max_user_epoch = IVotingEscrow(ve).getUserPointEpoch(_tokenId);
         uint _start_time = start_time;
 
         if (max_user_epoch == 0) return 0;
@@ -351,7 +351,7 @@ contract RewardsDistributor is IRewardsDistributor {
         if (user_epoch == 0) user_epoch = 1;
 
         IVotingEscrow.Point memory user_point = IVotingEscrow(ve)
-            .user_point_history(_tokenId, user_epoch);
+            .getUserPointHistory(_tokenId, user_epoch);
 
         if (week_cursor == 0)
             week_cursor = ((user_point.ts + WEEK - 1) / WEEK) * WEEK;
@@ -369,7 +369,7 @@ contract RewardsDistributor is IRewardsDistributor {
                 if (user_epoch > max_user_epoch) {
                     user_point = IVotingEscrow.Point(0, 0, 0, 0);
                 } else {
-                    user_point = IVotingEscrow(ve).user_point_history(
+                    user_point = IVotingEscrow(ve).getUserPointHistory(
                         _tokenId,
                         user_epoch
                     );
