@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
-import {IERC721, IERC721Metadata} from "@openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
-/*
- modified this to use Openzeppelin but in source they used own contracts
- */
+// modified to use Openzeppelin but in source they used own contracts
+import {IERC721} from "@openzeppelin-contracts/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+import {IVotes} from "@openzeppelin-contracts/contracts/governance/utils/IVotes.sol";
 import {IERC20} from "@openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC721Receiver} from "@openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
+import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
 
-contract VotingEscrow is IERC721 {
+contract VotingEscrow is IERC721, IVotes, ReentrancyGuard {
+    using SafeERC20 for IERC20;
     enum DepositType {
+        DEPOSIT_FOR_TYPE,
         CREATE_LOCK_TYPE,
         INCREASE_LOCK_AMOUNT,
         INCREASE_UNLOCK_TIME,
@@ -27,40 +30,99 @@ contract VotingEscrow is IERC721 {
         uint blk; // block
     }
 
-    /// @dev reentrancy guard
-    uint8 internal constant _not_entered = 1;
-    uint8 internal constant _entered = 2;
-    uint8 internal _entered_state = 1;
-    modifier nonreentrant() {
-        require(_entered_state == _not_entered);
-        _entered_state = _entered;
-        _;
-        _entered_state = _not_entered;
+    /// @notice A checkpoint for marking delegated tokenIds from a given timestamp
+    struct Checkpoint {
+        uint timestamp;
+        uint[] tokenIds;
     }
-
     // tokenId => latest_epoch
-    mapping(uint => uint) public user_point_epoch;
+    mapping(uint => uint) private user_point_epoch;
 
     // tokenId => all the points history till now
-    mapping(uint => Point[1000000000]) public user_point_history; // user -> Point[user_epoch]
+    mapping(uint => Point[1000000000]) private user_point_history; // user -> Point[user_epoch]
+
+    // time => slope_change in integer
+    mapping(uint => int128) private slope_changes; // time -> signed slope change
+
+    mapping(uint => Point) private point_history; // epoch -> unsigned point
+
+    // /// @dev Mapping of interface id to bool about whether or not it's supported
+    mapping(bytes4 => bool) private supportedInterfaces;
+
+    /// @dev Mapping from NFT ID to the address that owns it.
+    mapping(uint => address) private idToOwner;
+
+    /// @dev Mapping from owner address to count of his tokens.
+    mapping(address => uint) private ownerToNFTokenCount;
+
+    /// @dev Mapping from NFT ID to approved address.
+    mapping(uint => address) private idToApprovals;
+
+    /// @dev Mapping from owner address to mapping of operator addresses.
+    mapping(address => mapping(address => bool)) private ownerToOperators;
+
+    /// @dev block number of ownership change for a tokenId
+    mapping(uint => uint) private ownership_change;
+
+    /// @dev Mapping from owner address to mapping of index to tokenIds
+    mapping(address => mapping(uint => uint)) private ownerToNFTokenIdList;
+
+    /// @dev Mapping from NFT ID to index of owner
+    mapping(uint => uint) private tokenToOwnerIndex;
+
+    /// @notice A record of each accounts delegate
+    mapping(address => address) private _delegates;
+    uint public constant MAX_DELEGATES = 1024; // avoid too much gas
+
+    /// @notice A record of delegated token checkpoints for each account, by index
+    mapping(address => mapping(uint32 => Checkpoint)) public checkpoints;
+
+    /// @notice The number of checkpoints for each account
+    mapping(address => uint32) public numCheckpoints;
 
     // tokenId => {amount, lock_end}
     mapping(uint => LockedBalance) public locked;
 
-    uint public epoch;
+    /// @notice A record of states for signing / validating signatures
+    mapping(address => uint) public nonces;
 
-    // time => slope_change in integer
-    mapping(uint => int128) public slope_changes; // time -> signed slope change
     uint public supply;
+    uint public epoch;
+    // address public team;
+
+    address public immutable token;
+
+    /// @notice The EIP-712 typehash for the contract's domain
+    bytes32 public constant DOMAIN_TYPEHASH =
+        keccak256(
+            "EIP712Domain(string name,uint256 chainId,address verifyingContract)"
+        );
+
+    /// @notice The EIP-712 typehash for the delegation struct used by the contract
+    bytes32 public constant DELEGATION_TYPEHASH =
+        keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+
+    string public constant name = "veNFT";
+    string public constant symbol = "veNFT";
+    string public constant version = "1.0.0";
+    uint8 public constant decimals = 18;
+
+    /// @dev Current count of token
+    uint internal tokenId;
 
     uint internal constant WEEK = 1 weeks;
     uint internal constant MAXTIME = 4 * 365 * 86400;
     int128 internal constant iMAXTIME = 4 * 365 * 86400;
     uint internal constant MULTIPLIER = 1 ether;
 
-    /*//////////////////////////////////////////////////////////////
-                                 EVENTS
-    //////////////////////////////////////////////////////////////*/
+    /// @dev ERC165 interface ID of ERC165
+    bytes4 internal constant ERC165_INTERFACE_ID = 0x01ffc9a7;
+
+    /// @dev ERC165 interface ID of ERC721
+    bytes4 internal constant ERC721_INTERFACE_ID = 0x80ac58cd;
+
+    /// @dev ERC165 interface ID of ERC721Metadata
+    bytes4 internal constant ERC721_METADATA_INTERFACE_ID = 0x5b5e139f;
 
     event Deposit(
         address indexed provider,
@@ -73,35 +135,14 @@ contract VotingEscrow is IERC721 {
     event Supply(uint prevSupply, uint supply);
     event Withdraw(address indexed provider, uint tokenId, uint value, uint ts);
 
-    /*//////////////////////////////////////////////////////////////
-                               CONSTRUCTOR
-    //////////////////////////////////////////////////////////////*/
-    address public immutable token;
-    address public team;
-
-    mapping(uint => Point) public point_history; // epoch -> unsigned point
-
-    // /// @dev Mapping of interface id to bool about whether or not it's supported
-    mapping(bytes4 => bool) internal supportedInterfaces;
-
-    /// @dev ERC165 interface ID of ERC165
-    bytes4 internal constant ERC165_INTERFACE_ID = 0x01ffc9a7;
-
-    /// @dev ERC165 interface ID of ERC721
-    bytes4 internal constant ERC721_INTERFACE_ID = 0x80ac58cd;
-
-    /// @dev ERC165 interface ID of ERC721Metadata
-    bytes4 internal constant ERC721_METADATA_INTERFACE_ID = 0x5b5e139f;
-
-    /// @dev Current count of token
-    uint internal tokenId;
-
     /// @notice Contract constructor
-    /// @param token_addr `VELO` token address
-    constructor(address token_addr /*,address art_proxy*/) {
+    /// @param token_addr `TICO` token address
+    constructor(
+        address token_addr /*,address art_proxy*/
+    ) {
         token = token_addr;
         // voter = msg.sender;
-        team = msg.sender;
+        // team = msg.sender;
         // artProxy = art_proxy;
 
         point_history[0].blk = block.number;
@@ -117,130 +158,134 @@ contract VotingEscrow is IERC721 {
         emit Transfer(address(this), address(0), tokenId);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                              ERC165 LOGIC
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Interface identification is specified in ERC-165.
-    /// @param _interfaceID Id of the interface
-    function supportsInterface(
-        bytes4 _interfaceID
-    ) external view returns (bool) {
-        return supportedInterfaces[_interfaceID];
+    /// @notice Deposit `_value` tokens for `msg.sender` and lock for `_lock_duration`
+    /// @param _value Amount to deposit
+    /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
+    function create_lock(uint _value, uint _lock_duration)
+        external
+        nonReentrant
+        returns (uint)
+    {
+        return _create_lock(_value, _lock_duration, msg.sender);
     }
 
-    /*///////////////////////////////////////////////////////////////
-                             METADATA STORAGE
-    //////////////////////////////////////////////////////////////*/
-
-    // string constant public name = "veNFT";
-    // string constant public symbol = "veNFT";
-    // string constant public version = "1.0.0";
-    // uint8 constant public decimals = 18;
-
-    // function setTeam(address _team) external {
-    //     require(msg.sender == team);
-    //     team = _team;
-    // }
-
-    // function setArtProxy(address _proxy) external {
-    //     require(msg.sender == team);
-    //     artProxy = _proxy;
-    // }
-
-    // /// @dev Returns current token URI metadata
-    // /// @param _tokenId Token ID to fetch URI for.
-    // function tokenURI(uint _tokenId) external view returns (string memory) {
-    //     require(idToOwner[_tokenId] != address(0), "Query for nonexistent token");
-    //     LockedBalance memory _locked = locked[_tokenId];
-    //     return IVeArtProxy(artProxy)._tokenURI(
-    //         _tokenId,
-    //         _balanceOfNFT(_tokenId, block.timestamp),
-    //         _locked.end,
-    //         uint(int256(_locked.amount))
-    //     );
-    // }
-    /*//////////////////////////////////////////////////////////////
-                      ERC721 BALANCE/OWNER STORAGE
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Mapping from NFT ID to the address that owns it.
-    mapping(uint => address) internal idToOwner;
-
-    /// @dev Mapping from owner address to count of his tokens.
-    mapping(address => uint) internal ownerToNFTokenCount;
-
-    /// @dev Returns the address of the owner of the NFT.
-    /// @param _tokenId The identifier for an NFT.
-    function ownerOf(uint _tokenId) public view returns (address) {
-        return idToOwner[_tokenId];
+    /// @notice Deposit `_value` tokens for `_to` and lock for `_lock_duration`
+    /// @param _value Amount to deposit
+    /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
+    /// @param _to Address to deposit
+    function create_lock_for(
+        uint _value,
+        uint _lock_duration,
+        address _to
+    ) external nonReentrant returns (uint) {
+        return _create_lock(_value, _lock_duration, _to);
     }
 
-    /// @dev Returns the number of NFTs owned by `_owner`.
-    ///      Throws if `_owner` is the zero address. NFTs assigned to the zero address are considered invalid.
-    /// @param _owner Address for whom to query the balance.
-    function _balance(address _owner) internal view returns (uint) {
-        return ownerToNFTokenCount[_owner];
+    /// @notice Record global data to checkpoint
+    function checkpoint() external {
+        _checkpoint(0, LockedBalance(0, 0), LockedBalance(0, 0));
     }
 
-    /// @dev Returns the number of NFTs owned by `_owner`.
-    ///      Throws if `_owner` is the zero address. NFTs assigned to the zero address are considered invalid.
-    /// @param _owner Address for whom to query the balance.
-    function balanceOf(address _owner) external view returns (uint) {
-        return _balance(_owner);
+    /// @notice Deposit `_value` tokens for `_tokenId` and add to the lock
+    /// @dev Anyone (even a smart contract) can deposit for someone else, but
+    ///      cannot extend their locktime and deposit for a brand new user
+    /// @param _tokenId lock NFT
+    /// @param _value Amount to add to user's lock
+    function deposit_for(uint _tokenId, uint _value) external nonReentrant {
+        LockedBalance memory _locked = locked[_tokenId];
+
+        require(_value > 0, "Need value>0"); // dev: need non-zero value
+        require(_locked.amount > 0, "No existing lock found");
+        require(
+            _locked.end > block.timestamp,
+            "Cannot add to expired lock. Withdraw"
+        );
+        _deposit_for(
+            _tokenId,
+            _value,
+            0,
+            _locked,
+            DepositType.DEPOSIT_FOR_TYPE
+        );
     }
 
-    /*//////////////////////////////////////////////////////////////
-                         ERC721 APPROVAL STORAGE
-    //////////////////////////////////////////////////////////////*/
+    /// @notice Deposit `_value` additional tokens for `_tokenId` without modifying the unlock time
+    /// @param _value Amount of tokens to deposit and add to the lock
+    function increase_amount(uint _tokenId, uint _value) external nonReentrant {
+        assert(_isApprovedOrOwner(msg.sender, _tokenId));
 
-    /// @dev Mapping from NFT ID to approved address.
-    mapping(uint => address) internal idToApprovals;
+        LockedBalance memory _locked = locked[_tokenId];
 
-    /// @dev Mapping from owner address to mapping of operator addresses.
-    mapping(address => mapping(address => bool)) internal ownerToOperators;
+        require(_value > 0, "Need value>0"); // dev: need non-zero value
+        require(_locked.amount > 0, "No existing lock found");
+        require(
+            _locked.end > block.timestamp,
+            "Cannot add to expired lock. Withdraw"
+        );
 
-    mapping(uint => uint) public ownership_change;
-
-    /// @dev Get the approved address for a single NFT.
-    /// @param _tokenId ID of the NFT to query the approval of.
-    function getApproved(uint _tokenId) external view returns (address) {
-        return idToApprovals[_tokenId];
+        _deposit_for(
+            _tokenId,
+            _value,
+            0,
+            _locked,
+            DepositType.INCREASE_LOCK_AMOUNT
+        );
     }
 
-    /// @dev Checks if `_operator` is an approved operator for `_owner`.
-    /// @param _owner The address that owns the NFTs.
-    /// @param _operator The address that acts on behalf ofp the owner.
-    function isApprovedForAll(
-        address _owner,
-        address _operator
-    ) external view returns (bool) {
-        return (ownerToOperators[_owner])[_operator];
+    /// @notice Extend the unlock time for `_tokenId`
+    /// @param _lock_duration New number of seconds until tokens unlock
+    function increase_unlock_time(uint _tokenId, uint _lock_duration)
+        external
+        nonReentrant
+    {
+        assert(_isApprovedOrOwner(msg.sender, _tokenId));
+
+        LockedBalance memory _locked = locked[_tokenId];
+        uint unlock_time = ((block.timestamp + _lock_duration) / WEEK) * WEEK; // Locktime is rounded down to weeks
+
+        require(_locked.end > block.timestamp, "Lock expired");
+        require(_locked.amount > 0, "Nothing is locked");
+        require(unlock_time > _locked.end, "Can only increase lock duration");
+        require(
+            unlock_time <= block.timestamp + MAXTIME,
+            "Voting lock can be 4 years max"
+        );
+
+        _deposit_for(
+            _tokenId,
+            0,
+            unlock_time,
+            _locked,
+            DepositType.INCREASE_UNLOCK_TIME
+        );
     }
 
-    /*//////////////////////////////////////////////////////////////
-                              ERC721 LOGIC
-    //////////////////////////////////////////////////////////////*/
+    /// @notice Withdraw all tokens for `_tokenId`
+    /// @dev Only possible if the lock has expired
+    function withdraw(uint _tokenId) external nonReentrant {
+        assert(_isApprovedOrOwner(msg.sender, _tokenId));
+        // require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
 
-    /// @dev Set or reaffirm the approved address for an NFT. The zero address indicates there is no approved address.
-    ///      Throws unless `msg.sender` is the current NFT owner, or an authorized operator of the current owner.
-    ///      Throws if `_tokenId` is not a valid NFT. (NOTE: This is not written the EIP)
-    ///      Throws if `_approved` is the current owner. (NOTE: This is not written the EIP)
-    /// @param _approved Address to be approved for the given NFT ID.
-    /// @param _tokenId ID of the token to be approved.
-    function approve(address _approved, uint _tokenId) public {
-        address owner = idToOwner[_tokenId];
-        // Throws if `_tokenId` is not a valid NFT
-        require(owner != address(0));
-        // Throws if `_approved` is the current owner
-        require(_approved != owner);
-        // Check requirements
-        bool senderIsOwner = (idToOwner[_tokenId] == msg.sender);
-        bool senderIsApprovedForAll = (ownerToOperators[owner])[msg.sender];
-        require(senderIsOwner || senderIsApprovedForAll);
-        // Set the approval
-        idToApprovals[_tokenId] = _approved;
-        emit Approval(owner, _approved, _tokenId);
+        LockedBalance memory _locked = locked[_tokenId];
+        require(block.timestamp >= _locked.end, "The lock didn't expire");
+        uint value = uint(int256(_locked.amount));
+
+        locked[_tokenId] = LockedBalance(0, 0);
+        uint supply_before = supply;
+        supply = supply_before - value;
+
+        // old_locked can have either expired <= timestamp or zero end
+        // _locked has only 0 end
+        // Both can have >= 0 amount
+        _checkpoint(_tokenId, _locked, LockedBalance(0, 0));
+
+        IERC20(token).safeTransfer(msg.sender, value);
+
+        // Burn the NFT
+        _burn(_tokenId);
+
+        emit Withdraw(msg.sender, _tokenId, value, block.timestamp);
+        emit Supply(supply_before, supply_before - value);
     }
 
     /// @dev Enables or disables approval for a third party ("operator") to manage all of
@@ -256,69 +301,6 @@ contract VotingEscrow is IERC721 {
         emit ApprovalForAll(msg.sender, _operator, _approved);
     }
 
-    /* TRANSFER FUNCTIONS */
-    /// @dev Clear an approval of a given address
-    ///      Throws if `_owner` is not the current owner.
-    function _clearApproval(address _owner, uint _tokenId) internal {
-        // Throws if `_owner` is not the current owner
-        assert(idToOwner[_tokenId] == _owner);
-        if (idToApprovals[_tokenId] != address(0)) {
-            // Reset approvals
-            idToApprovals[_tokenId] = address(0);
-        }
-    }
-
-    /// @dev Returns whether the given spender can transfer a given token ID
-    /// @param _spender address of the spender to query
-    /// @param _tokenId uint ID of the token to be transferred
-    /// @return bool whether the msg.sender is approved for the given token ID, is an operator of the owner, or is the owner of the token
-    function _isApprovedOrOwner(
-        address _spender,
-        uint _tokenId
-    ) internal view returns (bool) {
-        address owner = idToOwner[_tokenId];
-        bool spenderIsOwner = owner == _spender;
-        bool spenderIsApproved = _spender == idToApprovals[_tokenId];
-        bool spenderIsApprovedForAll = (ownerToOperators[owner])[_spender];
-        return spenderIsOwner || spenderIsApproved || spenderIsApprovedForAll;
-    }
-
-    function isApprovedOrOwner(
-        address _spender,
-        uint _tokenId
-    ) external view returns (bool) {
-        return _isApprovedOrOwner(_spender, _tokenId);
-    }
-
-    /// @dev Exeute transfer of a NFT.
-    ///      Throws unless `msg.sender` is the current owner, an authorized operator, or the approved
-    ///      address for this NFT. (NOTE: `msg.sender` not allowed in internal function so pass `_sender`.)
-    ///      Throws if `_to` is the zero address.
-    ///      Throws if `_from` is not the current owner.
-    ///      Throws if `_tokenId` is not a valid NFT.
-    function _transferFrom(
-        address _from,
-        address _to,
-        uint _tokenId,
-        address _sender
-    ) internal {
-        // require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
-        // Check requirements
-        require(_isApprovedOrOwner(_sender, _tokenId));
-        // Clear approval. Throws if `_from` is not the current owner
-        _clearApproval(_from, _tokenId);
-        // Remove NFT. Throws if `_tokenId` is not a valid NFT
-        _removeTokenFrom(_from, _tokenId);
-        // auto re-delegate
-        _moveTokenDelegates(delegates(_from), delegates(_to), _tokenId);
-        // Add NFT
-        _addTokenTo(_to, _tokenId);
-        // Set the block of ownership transfer (for Flash NFT protection)
-        ownership_change[_tokenId] = block.number;
-        // Log the transfer
-        emit Transfer(_from, _to, _tokenId);
-    }
-
     /// @dev Throws unless `msg.sender` is the current owner, an authorized operator, or the approved address for this NFT.
     ///      Throws if `_from` is not the current owner.
     ///      Throws if `_to` is the zero address.
@@ -328,7 +310,11 @@ contract VotingEscrow is IERC721 {
     /// @param _from The current owner of the NFT.
     /// @param _to The new owner.
     /// @param _tokenId The NFT to transfer.
-    function transferFrom(address _from, address _to, uint _tokenId) external {
+    function transferFrom(
+        address _from,
+        address _to,
+        uint _tokenId
+    ) external {
         _transferFrom(_from, _to, _tokenId, msg.sender);
     }
 
@@ -351,15 +337,140 @@ contract VotingEscrow is IERC721 {
         safeTransferFrom(_from, _to, _tokenId, "");
     }
 
-    function _isContract(address account) internal view returns (bool) {
-        // This method relies on extcodesize, which returns 0 for contracts in
-        // construction, since the code is only stored at the end of the
-        // constructor execution.
-        uint size;
-        assembly {
-            size := extcodesize(account)
+    /// @dev Interface identification is specified in ERC-165.
+    /// @param _interfaceID Id of the interface
+    function supportsInterface(bytes4 _interfaceID)
+        external
+        view
+        returns (bool)
+    {
+        return supportedInterfaces[_interfaceID];
+    }
+
+    /// @dev Returns the number of NFTs owned by `_owner`.
+    ///      Throws if `_owner` is the zero address. NFTs assigned to the zero address are considered invalid.
+    /// @param _owner Address for whom to query the balance.
+    function balanceOf(address _owner) external view returns (uint) {
+        return _balance(_owner);
+    }
+
+    /// @dev Get the approved address for a single NFT.
+    /// @param _tokenId ID of the NFT to query the approval of.
+    function getApproved(uint _tokenId) external view returns (address) {
+        return idToApprovals[_tokenId];
+    }
+
+    /// @dev Checks if `_operator` is an approved operator for `_owner`.
+    /// @param _owner The address that owns the NFTs.
+    /// @param _operator The address that acts on behalf ofp the owner.
+    function isApprovedForAll(address _owner, address _operator)
+        external
+        view
+        returns (bool)
+    {
+        return (ownerToOperators[_owner])[_operator];
+    }
+
+    function isApprovedOrOwner(address _spender, uint _tokenId)
+        external
+        view
+        returns (bool)
+    {
+        return _isApprovedOrOwner(_spender, _tokenId);
+    }
+
+    /// @dev  Get token by index
+    function tokenOfOwnerByIndex(address _owner, uint _tokenIndex)
+        external
+        view
+        returns (uint)
+    {
+        return ownerToNFTokenIdList[_owner][_tokenIndex];
+    }
+
+    /**
+     * @notice Gets the current votes balance for `account`
+     * @param account The address to get votes balance
+     * @return The number of current votes for `account`
+     */
+    function getVotes(address account) external view returns (uint) {
+        uint32 nCheckpoints = numCheckpoints[account];
+        if (nCheckpoints == 0) {
+            return 0;
         }
-        return size > 0;
+        uint[] storage _tokenIds = checkpoints[account][nCheckpoints - 1]
+            .tokenIds;
+        uint votes = 0;
+        for (uint i = 0; i < _tokenIds.length; i++) {
+            uint tId = _tokenIds[i];
+            votes = votes + _balanceOfNFT(tId, block.timestamp);
+        }
+        return votes;
+    }
+
+    function getPastTotalSupply(uint256 timestamp)
+        external
+        view
+        returns (uint)
+    {
+        return totalSupplyAtT(timestamp);
+    }
+
+    function balanceOfNFT(uint _tokenId) external view returns (uint) {
+        if (ownership_change[_tokenId] == block.number) return 0;
+        return _balanceOfNFT(_tokenId, block.timestamp);
+    }
+
+    function totalSupply() external view returns (uint) {
+        return totalSupplyAtT(block.timestamp);
+    }
+
+    /// @notice Get the most recently recorded rate of voting power decrease for `_tokenId`
+    /// @param _tokenId token of the NFT
+    /// @return Value of the slope
+    function get_last_user_slope(uint _tokenId) external view returns (int128) {
+        uint uepoch = user_point_epoch[_tokenId];
+        return user_point_history[_tokenId][uepoch].slope;
+    }
+
+    /// @notice Get the timestamp for checkpoint `_idx` for `_tokenId`
+    /// @param _tokenId token of the NFT
+    /// @param _idx User epoch number
+    /// @return Epoch time of the checkpoint
+    function user_point_history__ts(uint _tokenId, uint _idx)
+        external
+        view
+        returns (uint)
+    {
+        return user_point_history[_tokenId][_idx].ts;
+    }
+
+    /// @notice Get timestamp when `_tokenId`'s lock finishes
+    /// @param _tokenId User NFT
+    /// @return Epoch time of the lock end
+    function locked__end(uint _tokenId) external view returns (uint) {
+        return locked[_tokenId].end;
+    }
+
+    /// @dev Set or reaffirm the approved address for an NFT. The zero address indicates there is no approved address.
+    ///      Throws unless `msg.sender` is the current NFT owner, or an authorized operator of the current owner.
+    ///      Throws if `_tokenId` is not a valid NFT. (NOTE: This is not written the EIP)
+    ///      Throws if `_approved` is the current owner. (NOTE: This is not written the EIP)
+    /// @param _approved Address to be approved for the given NFT ID.
+    /// @param _tokenId ID of the token to be approved.
+    function approve(address _approved, uint _tokenId) public {
+        address owner = idToOwner[_tokenId];
+        // Throws if `_tokenId` is not a valid NFT
+        require(owner != address(0));
+        // Throws if `_approved` is the current owner
+        require(_approved != owner);
+        // Check requirements
+        bool senderIsOwner = (idToOwner[_tokenId] == msg.sender);
+        bool senderIsApprovedForAll = (ownerToOperators[owner])[msg.sender];
+        require(senderIsOwner || senderIsApprovedForAll);
+        // Set the approval
+        idToApprovals[_tokenId] = _approved;
+        emit Approval(owner, _approved, _tokenId);
     }
 
     /// @dev Transfers the ownership of an NFT from one address to another address.
@@ -411,22 +522,198 @@ contract VotingEscrow is IERC721 {
         }
     }
 
-    /*//////////////////////////////////////////////////////////////
-                        INTERNAL MINT/BURN LOGIC
-    //////////////////////////////////////////////////////////////*/
+    /**
+     * @notice Delegate votes from `msg.sender` to `delegatee`
+     * @param delegatee The address to delegate votes to
+     */
+    function delegate(address delegatee) public {
+        if (delegatee == address(0)) delegatee = msg.sender;
+        return _delegate(msg.sender, delegatee);
+    }
 
-    /// @dev Mapping from owner address to mapping of index to tokenIds
-    mapping(address => mapping(uint => uint)) internal ownerToNFTokenIdList;
+    function delegateBySig(
+        address delegatee,
+        uint nonce,
+        uint expiry,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) public {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes(name)),
+                keccak256(bytes(version)),
+                block.chainid,
+                address(this)
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(DELEGATION_TYPEHASH, delegatee, nonce, expiry)
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", domainSeparator, structHash)
+        );
+        address signatory = ecrecover(digest, v, r, s);
+        require(
+            signatory != address(0),
+            "VotingEscrow::delegateBySig: invalid signature"
+        );
+        require(
+            nonce == nonces[signatory]++,
+            "VotingEscrow::delegateBySig: invalid nonce"
+        );
+        require(
+            block.timestamp <= expiry,
+            "VotingEscrow::delegateBySig: signature expired"
+        );
+        return _delegate(signatory, delegatee);
+    }
 
-    /// @dev Mapping from NFT ID to index of owner
-    mapping(uint => uint) internal tokenToOwnerIndex;
+    /// @dev Returns the address of the owner of the NFT.
+    /// @param _tokenId The identifier for an NFT.
+    function ownerOf(uint _tokenId) public view returns (address) {
+        return idToOwner[_tokenId];
+    }
 
-    /// @dev  Get token by index
-    function tokenOfOwnerByIndex(
-        address _owner,
-        uint _tokenIndex
-    ) external view returns (uint) {
-        return ownerToNFTokenIdList[_owner][_tokenIndex];
+    /**
+     * @notice Overrides the standard `Comp.sol` delegates mapping to return
+     * the delegator's own address if they haven't delegated.
+     * This avoids having to delegate to oneself.
+     */
+    function delegates(address delegator) public view returns (address) {
+        address current = _delegates[delegator];
+        return current == address(0) ? delegator : current;
+    }
+
+    function getPastVotesIndex(address account, uint timestamp)
+        public
+        view
+        returns (uint32)
+    {
+        uint32 nCheckpoints = numCheckpoints[account];
+        if (nCheckpoints == 0) {
+            return 0;
+        }
+        // First check most recent balance
+        if (checkpoints[account][nCheckpoints - 1].timestamp <= timestamp) {
+            return (nCheckpoints - 1);
+        }
+
+        // Next check implicit zero balance
+        if (checkpoints[account][0].timestamp > timestamp) {
+            return 0;
+        }
+
+        uint32 lower = 0;
+        uint32 upper = nCheckpoints - 1;
+        while (upper > lower) {
+            uint32 center = upper - (upper - lower) / 2; // ceil, avoiding overflow
+            Checkpoint storage cp = checkpoints[account][center];
+            if (cp.timestamp == timestamp) {
+                return center;
+            } else if (cp.timestamp < timestamp) {
+                lower = center;
+            } else {
+                upper = center - 1;
+            }
+        }
+        return lower;
+    }
+
+    function getPastVotes(address account, uint timestamp)
+        public
+        view
+        returns (uint)
+    {
+        uint32 _checkIndex = getPastVotesIndex(account, timestamp);
+        // Sum votes
+        uint[] storage _tokenIds = checkpoints[account][_checkIndex].tokenIds;
+        uint votes = 0;
+        for (uint i = 0; i < _tokenIds.length; i++) {
+            uint tId = _tokenIds[i];
+            // Use the provided input timestamp here to get the right decay
+            votes = votes + _balanceOfNFT(tId, timestamp);
+        }
+        return votes;
+    }
+
+    /// @notice Calculate total voting power
+    /// @dev Adheres to the ERC20 `totalSupply` interface for Aragon compatibility
+    /// @return Total voting power
+    function totalSupplyAtT(uint t) public view returns (uint) {
+        uint _epoch = epoch;
+        Point memory last_point = point_history[_epoch];
+        return _supply_at(last_point, t);
+    }
+
+    function getUserPointEpoch(uint _tokenId) public view returns (uint) {
+        return user_point_epoch[_tokenId];
+    }
+
+    function getUserPointHistory(uint _tokenId, uint _epoch)
+        public
+        view
+        returns (Point memory)
+    {
+        return user_point_history[_tokenId][_epoch];
+    }
+
+    function getSlopeChanges(uint _timestamp) public view returns (int128) {
+        return slope_changes[_timestamp];
+    }
+
+    function getPointHistory(uint _epoch) public view returns (Point memory) {
+        return point_history[_epoch];
+    }
+
+    function getOwnershipChangeOfTokenId(uint _tokenId)
+        public
+        view
+        returns (uint)
+    {
+        return ownership_change[_tokenId];
+    }
+
+    /* TRANSFER FUNCTIONS */
+    /// @dev Clear an approval of a given address
+    ///      Throws if `_owner` is not the current owner.
+    function _clearApproval(address _owner, uint _tokenId) internal {
+        // Throws if `_owner` is not the current owner
+        assert(idToOwner[_tokenId] == _owner);
+        if (idToApprovals[_tokenId] != address(0)) {
+            // Reset approvals
+            idToApprovals[_tokenId] = address(0);
+        }
+    }
+
+    /// @dev Exeute transfer of a NFT.
+    ///      Throws unless `msg.sender` is the current owner, an authorized operator, or the approved
+    ///      address for this NFT. (NOTE: `msg.sender` not allowed in internal function so pass `_sender`.)
+    ///      Throws if `_to` is the zero address.
+    ///      Throws if `_from` is not the current owner.
+    ///      Throws if `_tokenId` is not a valid NFT.
+    function _transferFrom(
+        address _from,
+        address _to,
+        uint _tokenId,
+        address _sender
+    ) internal {
+        // require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
+        // Check requirements
+        require(_isApprovedOrOwner(_sender, _tokenId));
+        // Clear approval. Throws if `_from` is not the current owner
+        _clearApproval(_from, _tokenId);
+        // Remove NFT. Throws if `_tokenId` is not a valid NFT
+        _removeTokenFrom(_from, _tokenId);
+        // auto re-delegate
+        _moveTokenDelegates(delegates(_from), delegates(_to), _tokenId);
+        // Add NFT
+        _addTokenTo(_to, _tokenId);
+        // Set the block of ownership transfer (for Flash NFT protection)
+        ownership_change[_tokenId] = block.number;
+        // Log the transfer
+        emit Transfer(_from, _to, _tokenId);
     }
 
     /// @dev Add a NFT to an index mapping to a given address
@@ -529,129 +816,6 @@ contract VotingEscrow is IERC721 {
         emit Transfer(owner, address(0), _tokenId);
     }
 
-    /*///////////////////////////////////////////////////////////////
-                            DAO VOTING STORAGE
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice The EIP-712 typehash for the contract's domain
-    bytes32 public constant DOMAIN_TYPEHASH =
-        keccak256(
-            "EIP712Domain(string name,uint256 chainId,address verifyingContract)"
-        );
-
-    /// @notice The EIP-712 typehash for the delegation struct used by the contract
-    bytes32 public constant DELEGATION_TYPEHASH =
-        keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
-
-    /// @notice A record of each accounts delegate
-    mapping(address => address) private _delegates;
-    uint public constant MAX_DELEGATES = 1024; // avoid too much gas
-
-    /// @notice A record of delegated token checkpoints for each account, by index
-    mapping(address => mapping(uint32 => Checkpoint)) public checkpoints;
-
-    /// @notice The number of checkpoints for each account
-    mapping(address => uint32) public numCheckpoints;
-
-    /// @notice A record of states for signing / validating signatures
-    mapping(address => uint) public nonces;
-
-    /// @notice A checkpoint for marking delegated tokenIds from a given timestamp
-    struct Checkpoint {
-        uint timestamp;
-        uint[] tokenIds;
-    }
-
-    /**
-     * @notice Overrides the standard `Comp.sol` delegates mapping to return
-     * the delegator's own address if they haven't delegated.
-     * This avoids having to delegate to oneself.
-     */
-    function delegates(address delegator) public view returns (address) {
-        address current = _delegates[delegator];
-        return current == address(0) ? delegator : current;
-    }
-
-    /**
-     * @notice Gets the current votes balance for `account`
-     * @param account The address to get votes balance
-     * @return The number of current votes for `account`
-     */
-    function getVotes(address account) external view returns (uint) {
-        uint32 nCheckpoints = numCheckpoints[account];
-        if (nCheckpoints == 0) {
-            return 0;
-        }
-        uint[] storage _tokenIds = checkpoints[account][nCheckpoints - 1]
-            .tokenIds;
-        uint votes = 0;
-        for (uint i = 0; i < _tokenIds.length; i++) {
-            uint tId = _tokenIds[i];
-            votes = votes + _balanceOfNFT(tId, block.timestamp);
-        }
-        return votes;
-    }
-
-    function getPastVotesIndex(
-        address account,
-        uint timestamp
-    ) public view returns (uint32) {
-        uint32 nCheckpoints = numCheckpoints[account];
-        if (nCheckpoints == 0) {
-            return 0;
-        }
-        // First check most recent balance
-        if (checkpoints[account][nCheckpoints - 1].timestamp <= timestamp) {
-            return (nCheckpoints - 1);
-        }
-
-        // Next check implicit zero balance
-        if (checkpoints[account][0].timestamp > timestamp) {
-            return 0;
-        }
-
-        uint32 lower = 0;
-        uint32 upper = nCheckpoints - 1;
-        while (upper > lower) {
-            uint32 center = upper - (upper - lower) / 2; // ceil, avoiding overflow
-            Checkpoint storage cp = checkpoints[account][center];
-            if (cp.timestamp == timestamp) {
-                return center;
-            } else if (cp.timestamp < timestamp) {
-                lower = center;
-            } else {
-                upper = center - 1;
-            }
-        }
-        return lower;
-    }
-
-    function getPastVotes(
-        address account,
-        uint timestamp
-    ) public view returns (uint) {
-        uint32 _checkIndex = getPastVotesIndex(account, timestamp);
-        // Sum votes
-        uint[] storage _tokenIds = checkpoints[account][_checkIndex].tokenIds;
-        uint votes = 0;
-        for (uint i = 0; i < _tokenIds.length; i++) {
-            uint tId = _tokenIds[i];
-            // Use the provided input timestamp here to get the right decay
-            votes = votes + _balanceOfNFT(tId, timestamp);
-        }
-        return votes;
-    }
-
-    function getPastTotalSupply(
-        uint256 timestamp
-    ) external view returns (uint) {
-        return totalSupplyAtT(timestamp);
-    }
-
-    /*///////////////////////////////////////////////////////////////
-                             DAO VOTING LOGIC
-    //////////////////////////////////////////////////////////////*/
-
     function _moveTokenDelegates(
         address srcRep,
         address dstRep,
@@ -701,96 +865,70 @@ contract VotingEscrow is IERC721 {
         }
     }
 
-    function _findWhatCheckpointToWrite(
-        address account
-    ) internal view returns (uint32) {
-        uint _timestamp = block.timestamp;
-        uint32 _nCheckPoints = numCheckpoints[account];
+    function _moveAllDelegates(
+        address owner,
+        address srcRep,
+        address dstRep
+    ) internal {
+        // You can only redelegate what you own
+        if (srcRep != dstRep) {
+            if (srcRep != address(0)) {
+                uint32 srcRepNum = numCheckpoints[srcRep];
+                uint[] storage srcRepOld = srcRepNum > 0
+                    ? checkpoints[srcRep][srcRepNum - 1].tokenIds
+                    : checkpoints[srcRep][0].tokenIds;
+                uint32 nextSrcRepNum = _findWhatCheckpointToWrite(srcRep);
+                uint[] storage srcRepNew = checkpoints[srcRep][nextSrcRepNum]
+                    .tokenIds;
+                // All the same except what owner owns
+                for (uint i = 0; i < srcRepOld.length; i++) {
+                    uint tId = srcRepOld[i];
+                    if (idToOwner[tId] != owner) {
+                        srcRepNew.push(tId);
+                    }
+                }
 
-        if (
-            _nCheckPoints > 0 &&
-            checkpoints[account][_nCheckPoints - 1].timestamp == _timestamp
-        ) {
-            return _nCheckPoints - 1;
-        } else {
-            return _nCheckPoints;
-        }
-    }
-
-    /*///////////////////////////////////////////////////////////////
-                           GAUGE VOTING STORAGE
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Get the current voting power for `_tokenId`
-    /// @dev Adheres to the ERC20 `balanceOf` interface for Aragon compatibility
-    /// @param _tokenId NFT for lock
-    /// @param _t Epoch time to return voting power at
-    /// @return User voting power
-    function _balanceOfNFT(
-        uint _tokenId,
-        uint _t
-    ) internal view returns (uint) {
-        uint _epoch = user_point_epoch[_tokenId];
-        if (_epoch == 0) {
-            return 0;
-        } else {
-            Point memory last_point = user_point_history[_tokenId][_epoch];
-            last_point.bias -=
-                last_point.slope *
-                int128(int256(_t) - int256(last_point.ts));
-            if (last_point.bias < 0) {
-                last_point.bias = 0;
+                numCheckpoints[srcRep] = srcRepNum + 1;
             }
-            return uint(int256(last_point.bias));
-        }
-    }
 
-    /// @notice Calculate total voting power at some point in the past
-    /// @param point The point (bias/slope) to start search from
-    /// @param t Time to calculate the total voting power at
-    /// @return Total voting power at that time
-    function _supply_at(
-        Point memory point,
-        uint t
-    ) internal view returns (uint) {
-        Point memory last_point = point;
-        uint t_i = (last_point.ts / WEEK) * WEEK;
-        for (uint i = 0; i < 255; ++i) {
-            t_i += WEEK;
-            int128 d_slope = 0;
-            if (t_i > t) {
-                t_i = t;
-            } else {
-                d_slope = slope_changes[t_i];
+            if (dstRep != address(0)) {
+                uint32 dstRepNum = numCheckpoints[dstRep];
+                uint[] storage dstRepOld = dstRepNum > 0
+                    ? checkpoints[dstRep][dstRepNum - 1].tokenIds
+                    : checkpoints[dstRep][0].tokenIds;
+                uint32 nextDstRepNum = _findWhatCheckpointToWrite(dstRep);
+                uint[] storage dstRepNew = checkpoints[dstRep][nextDstRepNum]
+                    .tokenIds;
+                uint ownerTokenCount = ownerToNFTokenCount[owner];
+                require(
+                    dstRepOld.length + ownerTokenCount <= MAX_DELEGATES,
+                    "dstRep would have too many tokenIds"
+                );
+                // All the same
+                for (uint i = 0; i < dstRepOld.length; i++) {
+                    uint tId = dstRepOld[i];
+                    dstRepNew.push(tId);
+                }
+                // Plus all that's owned
+                for (uint i = 0; i < ownerTokenCount; i++) {
+                    uint tId = ownerToNFTokenIdList[owner][i];
+                    dstRepNew.push(tId);
+                }
+
+                numCheckpoints[dstRep] = dstRepNum + 1;
             }
-            last_point.bias -=
-                last_point.slope *
-                int128(int256(t_i - last_point.ts));
-            if (t_i == t) {
-                break;
-            }
-            last_point.slope += d_slope;
-            last_point.ts = t_i;
         }
-
-        if (last_point.bias < 0) {
-            last_point.bias = 0;
-        }
-        return uint(uint128(last_point.bias));
     }
 
-    /// @notice Calculate total voting power
-    /// @dev Adheres to the ERC20 `totalSupply` interface for Aragon compatibility
-    /// @return Total voting power
-    function totalSupplyAtT(uint t) public view returns (uint) {
-        uint _epoch = epoch;
-        Point memory last_point = point_history[_epoch];
-        return _supply_at(last_point, t);
-    }
+    function _delegate(address delegator, address delegatee) internal {
+        /// @notice differs from `_delegate()` in `Comp.sol` to use `delegates` override method to simulate auto-delegation
+        address currentDelegate = delegates(delegator);
 
-    /*//////////////////////////////////////////////////////////////
-                              ESCROW LOGIC
-    //////////////////////////////////////////////////////////////*/
+        _delegates[delegator] = delegatee;
+
+        emit DelegateChanged(delegator, currentDelegate, delegatee);
+        _moveAllDelegates(delegator, currentDelegate, delegatee);
+    }
 
     /// @notice Record global and per-user data to checkpoint
     /// @param _tokenId NFT token ID. No user checkpoint if 0
@@ -878,7 +1016,6 @@ contract VotingEscrow is IERC721 {
                 if (t_i > block.timestamp) {
                     t_i = block.timestamp;
                 } else {
-                    // where did we calculate the slope_changes ?
                     d_slope = slope_changes[t_i];
                 }
                 //last_point.bias = last_point.slope * int128(int256(old_locked.end - t_i));
@@ -960,6 +1097,54 @@ contract VotingEscrow is IERC721 {
         }
     }
 
+    /// @notice Deposit and lock tokens for a user
+    /// @param _tokenId NFT that holds lock
+    /// @param _value Amount to deposit
+    /// @param unlock_time New time when to unlock the tokens, or 0 if unchanged
+    /// @param locked_balance Previous locked amount / timestamp
+    /// @param deposit_type The type of deposit
+    function _deposit_for(
+        uint _tokenId,
+        uint _value,
+        uint unlock_time,
+        LockedBalance memory locked_balance,
+        DepositType deposit_type
+    ) private {
+        LockedBalance memory _locked = locked_balance;
+        uint supply_before = supply;
+
+        supply = supply_before + _value;
+        LockedBalance memory old_locked;
+        (old_locked.amount, old_locked.end) = (_locked.amount, _locked.end);
+        // Adding to existing lock, or if a lock is expired - creating a new one
+        _locked.amount += int128(int256(_value));
+        if (unlock_time != 0) {
+            _locked.end = unlock_time;
+        }
+        locked[_tokenId] = _locked;
+
+        // Possibilities:
+        // Both old_locked.end could be current or expired (>/< block.timestamp)
+        // value == 0 (extend lock) or value > 0 (add to lock or extend lock)
+        // _locked.end > block.timestamp (always)
+        _checkpoint(_tokenId, old_locked, _locked);
+
+        address from = msg.sender;
+        if (_value != 0 && deposit_type != DepositType.MERGE_TYPE) {
+            IERC20(token).safeTransferFrom(from, address(this), _value);
+        }
+
+        emit Deposit(
+            from,
+            _tokenId,
+            _value,
+            _locked.end,
+            deposit_type,
+            block.timestamp
+        );
+        emit Supply(supply_before, supply_before + _value);
+    }
+
     /// @notice Deposit `_value` tokens for `_to` and lock for `_lock_duration`
     /// @param _value Amount to deposit
     /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
@@ -968,10 +1153,10 @@ contract VotingEscrow is IERC721 {
         uint _value,
         uint _lock_duration,
         address _to
-    ) internal returns (uint) {
+    ) private returns (uint) {
         uint unlock_time = ((block.timestamp + _lock_duration) / WEEK) * WEEK; // Locktime is rounded down to weeks
 
-        require(_value > 0); // dev: need non-zero value
+        require(_value > 0, "Need value>0"); // dev: need non-zero value
         require(
             unlock_time > block.timestamp,
             "Can only lock until time in the future"
@@ -995,152 +1180,111 @@ contract VotingEscrow is IERC721 {
         return _tokenId;
     }
 
-    /// @notice Deposit `_value` tokens for `msg.sender` and lock for `_lock_duration`
-    /// @param _value Amount to deposit
-    /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
-    function create_lock(
-        uint _value,
-        uint _lock_duration
-    ) external nonreentrant returns (uint) {
-        return _create_lock(_value, _lock_duration, msg.sender);
+    /// @dev Returns the number of NFTs owned by `_owner`.
+    ///      Throws if `_owner` is the zero address. NFTs assigned to the zero address are considered invalid.
+    /// @param _owner Address for whom to query the balance.
+    function _balance(address _owner) private view returns (uint) {
+        return ownerToNFTokenCount[_owner];
     }
 
-    /// @notice Deposit `_value` tokens for `_to` and lock for `_lock_duration`
-    /// @param _value Amount to deposit
-    /// @param _lock_duration Number of seconds to lock tokens for (rounded down to nearest week)
-    /// @param _to Address to deposit
-    function create_lock_for(
-        uint _value,
-        uint _lock_duration,
-        address _to
-    ) external nonreentrant returns (uint) {
-        return _create_lock(_value, _lock_duration, _to);
+    /// @dev Returns whether the given spender can transfer a given token ID
+    /// @param _spender address of the spender to query
+    /// @param _tokenId uint ID of the token to be transferred
+    /// @return bool whether the msg.sender is approved for the given token ID, is an operator of the owner, or is the owner of the token
+    function _isApprovedOrOwner(address _spender, uint _tokenId)
+        private
+        view
+        returns (bool)
+    {
+        address owner = idToOwner[_tokenId];
+        bool spenderIsOwner = owner == _spender;
+        bool spenderIsApproved = _spender == idToApprovals[_tokenId];
+        bool spenderIsApprovedForAll = (ownerToOperators[owner])[_spender];
+        return spenderIsOwner || spenderIsApproved || spenderIsApprovedForAll;
     }
 
-    /// @notice Deposit and lock tokens for a user
-    /// @param _tokenId NFT that holds lock
-    /// @param _value Amount to deposit
-    /// @param unlock_time New time when to unlock the tokens, or 0 if unchanged
-    /// @param locked_balance Previous locked amount / timestamp
-    /// @param deposit_type The type of deposit
-    function _deposit_for(
-        uint _tokenId,
-        uint _value,
-        uint unlock_time,
-        LockedBalance memory locked_balance,
-        DepositType deposit_type
-    ) internal {
-        LockedBalance memory _locked = locked_balance;
-        uint supply_before = supply;
-
-        supply = supply_before + _value;
-        LockedBalance memory old_locked;
-        (old_locked.amount, old_locked.end) = (_locked.amount, _locked.end);
-        // Adding to existing lock, or if a lock is expired - creating a new one
-        _locked.amount += int128(int256(_value));
-        if (unlock_time != 0) {
-            _locked.end = unlock_time;
+    function _isContract(address account) private view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+        uint size;
+        assembly {
+            size := extcodesize(account)
         }
-        locked[_tokenId] = _locked;
+        return size > 0;
+    }
 
-        // Possibilities:
-        // Both old_locked.end could be current or expired (>/< block.timestamp)
-        // value == 0 (extend lock) or value > 0 (add to lock or extend lock)
-        // _locked.end > block.timestamp (always)
-        _checkpoint(_tokenId, old_locked, _locked);
+    function _findWhatCheckpointToWrite(address account)
+        private
+        view
+        returns (uint32)
+    {
+        uint _timestamp = block.timestamp;
+        uint32 _nCheckPoints = numCheckpoints[account];
 
-        address from = msg.sender;
-        if (_value != 0 && deposit_type != DepositType.MERGE_TYPE) {
-            assert(IERC20(token).transferFrom(from, address(this), _value));
+        if (
+            _nCheckPoints > 0 &&
+            checkpoints[account][_nCheckPoints - 1].timestamp == _timestamp
+        ) {
+            return _nCheckPoints - 1;
+        } else {
+            return _nCheckPoints;
+        }
+    }
+
+    /// @notice Get the current voting power for `_tokenId`
+    /// @dev Adheres to the ERC20 `balanceOf` interface for Aragon compatibility
+    /// @param _tokenId NFT for lock
+    /// @param _t Epoch time to return voting power at
+    /// @return User voting power
+    function _balanceOfNFT(uint _tokenId, uint _t) private view returns (uint) {
+        uint _epoch = user_point_epoch[_tokenId];
+        if (_epoch == 0) {
+            return 0;
+        } else {
+            Point memory last_point = user_point_history[_tokenId][_epoch];
+            last_point.bias -=
+                last_point.slope *
+                int128(int256(_t) - int256(last_point.ts));
+            if (last_point.bias < 0) {
+                last_point.bias = 0;
+            }
+            return uint(int256(last_point.bias));
+        }
+    }
+
+    /// @notice Calculate total voting power at some point in the past
+    /// @param point The point (bias/slope) to start search from
+    /// @param t Time to calculate the total voting power at
+    /// @return Total voting power at that time
+    function _supply_at(Point memory point, uint t)
+        private
+        view
+        returns (uint)
+    {
+        Point memory last_point = point;
+        uint t_i = (last_point.ts / WEEK) * WEEK;
+        for (uint i = 0; i < 255; ++i) {
+            t_i += WEEK;
+            int128 d_slope = 0;
+            if (t_i > t) {
+                t_i = t;
+            } else {
+                d_slope = slope_changes[t_i];
+            }
+            last_point.bias -=
+                last_point.slope *
+                int128(int256(t_i - last_point.ts));
+            if (t_i == t) {
+                break;
+            }
+            last_point.slope += d_slope;
+            last_point.ts = t_i;
         }
 
-        emit Deposit(
-            from,
-            _tokenId,
-            _value,
-            _locked.end,
-            deposit_type,
-            block.timestamp
-        );
-        emit Supply(supply_before, supply_before + _value);
-    }
-
-    /// @notice Deposit `_value` additional tokens for `_tokenId` without modifying the unlock time
-    /// @param _value Amount of tokens to deposit and add to the lock
-    function increase_amount(uint _tokenId, uint _value) external nonreentrant {
-        assert(_isApprovedOrOwner(msg.sender, _tokenId));
-
-        LockedBalance memory _locked = locked[_tokenId];
-
-        assert(_value > 0); // dev: need non-zero value
-        require(_locked.amount > 0, "No existing lock found");
-        require(
-            _locked.end > block.timestamp,
-            "Cannot add to expired lock. Withdraw"
-        );
-
-        _deposit_for(
-            _tokenId,
-            _value,
-            0,
-            _locked,
-            DepositType.INCREASE_LOCK_AMOUNT
-        );
-    }
-
-    /// @notice Extend the unlock time for `_tokenId`
-    /// @param _lock_duration New number of seconds until tokens unlock
-    function increase_unlock_time(
-        uint _tokenId,
-        uint _lock_duration
-    ) external nonreentrant {
-        assert(_isApprovedOrOwner(msg.sender, _tokenId));
-
-        LockedBalance memory _locked = locked[_tokenId];
-        uint unlock_time = ((block.timestamp + _lock_duration) / WEEK) * WEEK; // Locktime is rounded down to weeks
-
-        require(_locked.end > block.timestamp, "Lock expired");
-        require(_locked.amount > 0, "Nothing is locked");
-        require(unlock_time > _locked.end, "Can only increase lock duration");
-        require(
-            unlock_time <= block.timestamp + MAXTIME,
-            "Voting lock can be 4 years max"
-        );
-
-        _deposit_for(
-            _tokenId,
-            0,
-            unlock_time,
-            _locked,
-            DepositType.INCREASE_UNLOCK_TIME
-        );
-    }
-
-    /// @notice Withdraw all tokens for `_tokenId`
-    /// @dev Only possible if the lock has expired
-    function withdraw(uint _tokenId) external nonreentrant {
-        assert(_isApprovedOrOwner(msg.sender, _tokenId));
-        // require(attachments[_tokenId] == 0 && !voted[_tokenId], "attached");
-
-        LockedBalance memory _locked = locked[_tokenId];
-        require(block.timestamp >= _locked.end, "The lock didn't expire");
-        uint value = uint(int256(_locked.amount));
-
-        locked[_tokenId] = LockedBalance(0, 0);
-        uint supply_before = supply;
-        supply = supply_before - value;
-
-        // old_locked can have either expired <= timestamp or zero end
-        // _locked has only 0 end
-        // Both can have >= 0 amount
-        _checkpoint(_tokenId, _locked, LockedBalance(0, 0));
-
-        assert(IERC20(token).transfer(msg.sender, value));
-
-        // Burn the NFT
-        _burn(_tokenId);
-
-        emit Withdraw(msg.sender, _tokenId, value, block.timestamp);
-        emit Supply(supply_before, supply_before - value);
+        if (last_point.bias < 0) {
+            last_point.bias = 0;
+        }
+        return uint(uint128(last_point.bias));
     }
 }
